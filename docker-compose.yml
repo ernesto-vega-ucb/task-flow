@@ -1,0 +1,72 @@
+# ============================================================
+# Docker Compose provisional de TaskFlow (monorepo)
+# ------------------------------------------------------------
+# Futuro: se sustituirá por Kubernetes dentro de un pipeline
+# CI/CD; por ahora levanta el stack completo en local.
+#
+# Uso:
+#   docker compose up --build -d
+#   docker compose down           # parar
+#   docker compose down -v        # parar y borrar datos de la BD
+# ============================================================
+
+services:
+  # ---------- Base de datos PostgreSQL ----------
+  db:
+    image: postgres:16-alpine
+    container_name: taskflow-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-taskflow}
+      POSTGRES_USER: ${DB_USERNAME:-taskflow}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-taskflow}
+    ports:
+      # Expuesto por si quieres conectarte con un cliente externo (DBeaver, pgAdmin…)
+      - "${DB_HOST_PORT:-5432}:5432"
+    volumes:
+      - taskflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------- Backend (Spring Boot) ----------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: taskflow-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db                # nombre del servicio dentro de la red compose
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-taskflow}
+      DB_USERNAME: ${DB_USERNAME:-taskflow}
+      DB_PASSWORD: ${DB_PASSWORD:-taskflow}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  # ---------- Frontend (React + Nginx) ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # URL que el NAVEGADOR usará para llamar a la API (host = tu máquina)
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080/api}
+    container_name: taskflow-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    restart: unless-stopped
+
+volumes:
+  taskflow-db-data:
+    name: taskflow-db-data

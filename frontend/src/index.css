@@ -1,0 +1,342 @@
+/* ===========================
+   TaskFlow – Estilos globales
+   =========================== */
+
+:root {
+  --color-bg: #f4f6f9;
+  --color-surface: #ffffff;
+  --color-border: #e2e8f0;
+  --color-text: #1e293b;
+  --color-text-muted: #64748b;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-secondary: #64748b;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+  --color-pendiente: #f59e0b;
+  --color-en-progreso: #3b82f6;
+  --color-completada: #10b981;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.5;
+}
+
+/* ===== App ===== */
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+}
+
+.app__header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.app__title {
+  margin: 0;
+  font-size: 2.25rem;
+  color: var(--color-primary);
+}
+
+.app__subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--color-text-muted);
+}
+
+/* ===== Botones ===== */
+.btn {
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.55rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.btn--secondary {
+  background: #e2e8f0;
+  color: var(--color-text);
+}
+
+.btn--secondary:hover:not(:disabled) {
+  background: #cbd5e1;
+}
+
+.btn--danger {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--color-danger-hover);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn--small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+/* ===== Barra de filtros ===== */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  box-shadow: var(--shadow);
+  margin-bottom: 1.5rem;
+}
+
+.filter-bar__group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.filter-bar__label {
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.filter-bar__select,
+.task-form__select,
+.task-card__status-select {
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  font-size: 0.9rem;
+  color: var(--color-text);
+}
+
+.filter-bar__actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* ===== Lista de tareas ===== */
+.task-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.feedback {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+}
+
+.feedback--error {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+/* ===== Tarjeta de tarea ===== */
+.task-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.task-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.task-card__title {
+  margin: 0;
+  font-size: 1.05rem;
+  word-break: break-word;
+}
+
+.task-card__description {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+}
+
+.task-card__date {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.task-card__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.task-card__buttons {
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* ===== Badge de estado ===== */
+.status-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.status-badge--pendiente {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge--en_progreso {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.status-badge--completada {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+/* ===== Modal ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  width: 100%;
+  max-width: 480px;
+  padding: 1.5rem;
+}
+
+.modal__title {
+  margin: 0 0 1rem;
+  font-size: 1.3rem;
+}
+
+/* ===== Formulario ===== */
+.task-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.task-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.task-form__label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.task-form__input,
+.task-form__textarea {
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.task-form__input:focus,
+.task-form__textarea:focus,
+.task-form__select:focus,
+.filter-bar__select:focus,
+.task-card__status-select:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.task-form__error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: 0.85rem;
+}
+
+.task-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 600px) {
+  .filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-bar__actions {
+    justify-content: stretch;
+  }
+
+  .filter-bar__actions .btn {
+    flex: 1;
+  }
+
+  .task-card__footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

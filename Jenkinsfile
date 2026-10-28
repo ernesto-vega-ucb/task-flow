@@ -3,20 +3,29 @@ pipeline {
 
     // -------------------------------------------------------------------------
     // VARIABLES DE CONFIGURACIÓN
-    // Modifica estos valores según tu entorno (VM1 = Jenkins con internet, VM2 = Destino sin internet)
+    // VM1 = Jenkins (con acceso a internet) | VM2 = Servidor destino (SIN acceso a internet)
     // -------------------------------------------------------------------------
     environment {
-        // IP y acceso a VM2
-        VM2_IP          = '192.168.100.20'  // Cambiar por la IP real de VM2
-        VM2_USER        = 'administrator'          // Cambiar por el usuario SSH de VM2
-        REMOTE_DIR      = '/home/administrator/taskflow'
+        // Conexión SSH hacia VM2
+        VM2_IP          = '192.168.100.20'        // Cambiar por la IP real de VM2
+        VM2_USER        = 'administrator'         // Cambiar por el usuario SSH de VM2
+        REMOTE_DIR      = '/home/administrator/taskflow-deploy'
 
         // Credencial SSH configurada en Jenkins
         SSH_CRED_ID     = 'vm2-ssh-key'
 
-        // Imagen de PostgreSQL a transferir (debe coincidir con la del docker-compose.yml)
+        // Imágenes Docker
         POSTGRES_IMAGE  = 'postgres:16-alpine'
-        POSTGRES_TAR    = 'postgres-16-alpine.tar'
+        BACKEND_IMAGE   = 'taskflow-backend'
+        FRONTEND_IMAGE  = 'taskflow-frontend'
+
+        // Archivos comprimidos (.tar.gz) para transferencia
+        POSTGRES_TAR_GZ = 'postgres-16-alpine.tar.gz'
+        BACKEND_TAR_GZ  = 'taskflow-backend.tar.gz'
+        FRONTEND_TAR_GZ = 'taskflow-frontend.tar.gz'
+
+        // Archivo compose a transferir
+        COMPOSE_FILE    = 'docker-compose.yml'
     }
 
     // -------------------------------------------------------------------------
@@ -24,16 +33,15 @@ pipeline {
     // -------------------------------------------------------------------------
     stages {
 
-        // ETAPA 1: CHECKOUT DEL CÓDIGO DESDE GITHUB
+        // ETAPA 1: CHECKOUT
         stage('Checkout') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "ETAPA 1: CHECKOUT DEL CÓDIGO"
+                    echo "ETAPA 1: CHECKOUT DEL CÓDIGO FUENTE"
                     echo "=========================================="
-                    echo "[INFO] Obteniendo código desde el repositorio vinculado al Job..."
+                    echo "[INFO] Obteniendo código desde GitHub mediante checkout scm..."
                 }
-                // Descarga el código usando la configuración SCM del job
                 checkout scm
                 script {
                     echo "[OK] Código obtenido correctamente."
@@ -42,140 +50,148 @@ pipeline {
             }
         }
 
-        // ETAPA 2: DESCARGAR Y PREPARAR IMAGEN POSTGRES EN VM1 (CON INTERNET)
-        stage('Prepare Postgres Image on VM1') {
+        // ETAPA 2: BUILD & PULL EN VM1
+        stage('Build & Pull en VM 1') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "ETAPA 2: PREPARAR IMAGEN POSTGRES EN VM1"
+                    echo "ETAPA 2: BUILD & PULL EN VM1"
                     echo "=========================================="
-                    echo "[INFO] VM1 tiene acceso a internet. Descargando/guardando ${POSTGRES_IMAGE}..."
+                    echo "[INFO] VM1 cuenta con acceso a internet para preparar las imágenes..."
                 }
                 sh """
-                    echo "[VM1] Verificando si la imagen ${POSTGRES_IMAGE} existe localmente..."
-                    if ! docker image inspect ${POSTGRES_IMAGE} > /dev/null 2>&1; then
-                        echo "[VM1] Imagen no encontrada. Descargando desde Docker Hub..."
-                        docker pull ${POSTGRES_IMAGE}
-                    else
-                        echo "[VM1] Imagen ya existe localmente."
-                    fi
-                    
-                    echo "[VM1] Guardando imagen como archivo tar..."
-                    docker save -o ${POSTGRES_TAR} ${POSTGRES_IMAGE}
-                    
-                    echo "[VM1] Tamaño del archivo generado:"
-                    ls -lh ${POSTGRES_TAR}
-                    echo "[OK] Imagen preparada para transferencia."
+                    echo "[VM1] Limpiando imágenes locales viejas (opcional)..."
+                    docker image prune -f || true
+
+                    echo "[VM1] Descargando imagen base de PostgreSQL: ${POSTGRES_IMAGE}"
+                    docker pull ${POSTGRES_IMAGE}
+
+                    echo "[VM1] Construyendo imagen Docker del backend: ${BACKEND_IMAGE}"
+                    docker build -t ${BACKEND_IMAGE} ./backend
+
+                    echo "[VM1] Construyendo imagen Docker del frontend: ${FRONTEND_IMAGE}"
+                    docker build -t ${FRONTEND_IMAGE} ./frontend
+
+                    echo "[VM1] Verificando imágenes generadas/obtenidas:"
+                    docker images | grep -E 'postgres|taskflow-backend|taskflow-frontend'
+                    echo "[OK] Build & Pull finalizados en VM1."
                 """
             }
         }
 
-        // ETAPA 3: SINCRONIZACIÓN CON VM2 (CÓDIGO + IMAGEN POSTGRES)
-        stage('Sync to Remote VM (VM 2)') {
+        // ETAPA 3: PACKAGE & TRANSFER
+        stage('Package & Transfer') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "ETAPA 3: SINCRONIZACIÓN CON VM2"
+                    echo "ETAPA 3: PACKAGE & TRANSFER"
                     echo "=========================================="
-                    echo "[INFO] Copiando monorepo + imagen PostgreSQL hacia ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}"
+                    echo "[INFO] Comprimiendo imágenes y transfiriendo a VM2..."
                 }
-
                 sshagent(credentials: ["${SSH_CRED_ID}"]) {
                     sh """
-                        echo "[INFO] Creando directorio remoto..."
+                        echo "[VM1] Comprimiendo imágenes en archivos .tar.gz..."
+                        docker save ${POSTGRES_IMAGE} | gzip -c > ${POSTGRES_TAR_GZ}
+                        docker save ${BACKEND_IMAGE}  | gzip -c > ${BACKEND_TAR_GZ}
+                        docker save ${FRONTEND_IMAGE} | gzip -c > ${FRONTEND_TAR_GZ}
+
+                        echo "[VM1] Archivos generados:"
+                        ls -lh ${POSTGRES_TAR_GZ} ${BACKEND_TAR_GZ} ${FRONTEND_TAR_GZ}
+
+                        echo "[VM1] Creando directorio remoto en VM2: ${REMOTE_DIR}"
                         ssh -o StrictHostKeyChecking=no ${VM2_USER}@${VM2_IP} "mkdir -p ${REMOTE_DIR}"
 
-                        echo "[INFO] Sincronizando carpetas backend/ y frontend/..."
-                        rsync -avz --delete \\
-                              -e "ssh -o StrictHostKeyChecking=no" \\
-                              ./backend/ ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}/backend/ \\
-                        && rsync -avz --delete \\
-                              -e "ssh -o StrictHostKeyChecking=no" \\
-                              ./frontend/ ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}/frontend/
+                        echo "[VM1] Transferiendo imágenes comprimidas y docker-compose.yml a VM2..."
+                        scp -o StrictHostKeyChecking=no \\
+                            ${POSTGRES_TAR_GZ} \\
+                            ${BACKEND_TAR_GZ} \\
+                            ${FRONTEND_TAR_GZ} \\
+                            ${COMPOSE_FILE} \\
+                            ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}/
 
-                        echo "[INFO] Sincronizando docker-compose.yml, .env.example..."
-                        rsync -avz \\
-                              -e "ssh -o StrictHostKeyChecking=no" \\
-                              ./docker-compose.yml ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}/ \\
-                        && rsync -avz \\
-                              -e "ssh -o StrictHostKeyChecking=no" \\
-                              ./.env.example ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}/ 2>/dev/null || true
+                        echo "[VM1] Limpiando archivos temporales locales..."
+                        rm -f ${POSTGRES_TAR_GZ} ${BACKEND_TAR_GZ} ${FRONTEND_TAR_GZ}
 
-                        echo "[INFO] Transfiriendo imagen PostgreSQL a VM2 (sin acceso a internet)..."
-                        scp -o StrictHostKeyChecking=no ${POSTGRES_TAR} ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}/
-
-                        echo "[OK] Sincronización y transferencia completadas."
+                        echo "[VM1] Estado tras limpieza:"
+                        ls -lh *.tar.gz 2>/dev/null || echo "[VM1] No hay archivos .tar.gz locales pendientes."
+                        echo "[OK] Package & Transfer completado."
                     """
                 }
             }
         }
 
-        // ETAPA 4: CARGAR IMAGEN, BUILD & DEPLOY EN VM2
-        stage('Load Image & Deploy on VM 2') {
+        // ETAPA 4: CLEAN & DEPLOY EN VM2
+        stage('Clean & Deploy en VM 2') {
             steps {
                 script {
                     echo "=========================================="
-                    echo "ETAPA 4: CARGAR IMAGEN Y DESPLEGAR EN VM2"
+                    echo "ETAPA 4: CLEAN & DEPLOY EN VM2"
                     echo "=========================================="
-                    echo "[INFO] Ejecutando despliegue en ${VM2_USER}@${VM2_IP}"
+                    echo "[INFO] Ejecutando despliegue offline en ${VM2_USER}@${VM2_IP}"
                 }
-
                 sshagent(credentials: ["${SSH_CRED_ID}"]) {
                     sh """
                         ssh -o StrictHostKeyChecking=no ${VM2_USER}@${VM2_IP} << 'EOF'
                             set -e
                             echo "=========================================="
-                            echo "[VM2] INICIANDO DESPLIEGUE OFFLINE"
+                            echo "[VM2] INICIANDO DESPLIEGUE AUTOMATIZADO"
                             echo "=========================================="
                             cd ${REMOTE_DIR}
 
-                            # Crear .env si no existe
+                            # Crear .env si existe .env.example y no hay .env
                             if [ ! -f .env ] && [ -f .env.example ]; then
                                 echo "[VM2] Copiando .env.example a .env"
                                 cp .env.example .env
                             fi
 
                             # ----------------------------------------
-                            # 1. CARGAR IMAGEN POSTGRES DESDE TAR
+                            # 1. LIMPIAR CONTENEDORES ANTERIORES
                             # ----------------------------------------
                             echo "=========================================="
-                            echo "[VM2] CARGANDO IMAGEN POSTGRES"
+                            echo "[VM2] LIMPIANDO CONTENEDORES ANTERIORES"
                             echo "=========================================="
-                            if [ -f ${POSTGRES_TAR} ]; then
-                                echo "[VM2] Importando ${POSTGRES_TAR} a Docker..."
-                                docker load -i ${POSTGRES_TAR}
-                                echo "[VM2] Imagen ${POSTGRES_IMAGE} cargada correctamente."
-                                echo "[VM2] Eliminando archivo tar temporal en VM2..."
-                                rm -f ${POSTGRES_TAR}
-                            else
-                                echo "[VM2][WARN] No se encontró ${POSTGRES_TAR}. Verificando si la imagen ya existe..."
-                            fi
-
-                            # Verificar imagen
-                            docker image inspect ${POSTGRES_IMAGE} > /dev/null 2>&1 && echo "[VM2][OK] ${POSTGRES_IMAGE} disponible" || echo "[VM2][ERROR] ${POSTGRES_IMAGE} NO DISPONIBLE"
+                            docker compose down --remove-orphans || true
 
                             # ----------------------------------------
-                            # 2. DETENER STACK ANTERIOR
+                            # 2. CARGAR IMÁGENES DESDE .TAR.GZ
                             # ----------------------------------------
                             echo "=========================================="
-                            echo "[VM2] DETENIENDO STACK ANTERIOR"
+                            echo "[VM2] CARGANDO IMÁGENES DESDE ARCHIVOS .TAR.GZ"
                             echo "=========================================="
-                            docker compose down || true
+                            echo "[VM2] Cargando ${POSTGRES_TAR_GZ}..."
+                            gunzip -c ${POSTGRES_TAR_GZ} | docker load
+                            echo "[VM2] ${POSTGRES_IMAGE} cargado correctamente."
+
+                            echo "[VM2] Cargando ${BACKEND_TAR_GZ}..."
+                            gunzip -c ${BACKEND_TAR_GZ} | docker load
+                            echo "[VM2] ${BACKEND_IMAGE} cargado correctamente."
+
+                            echo "[VM2] Cargando ${FRONTEND_TAR_GZ}..."
+                            gunzip -c ${FRONTEND_TAR_GZ} | docker load
+                            echo "[VM2] ${FRONTEND_IMAGE} cargado correctamente."
 
                             # ----------------------------------------
-                            # 3. CONSTRUIR Y LEVANTAR NUEVOS CONTENEDORES
+                            # 3. LEVANTAR STACK CON DOCKER COMPOSE
                             # ----------------------------------------
                             echo "=========================================="
-                            echo "[VM2] CONSTRUYENDO Y LEVANTANDO CONTENEDORES"
+                            echo "[VM2] LEVANTANDO STACK CON DOCKER COMPOSE"
                             echo "=========================================="
-                            echo "[VM2] Esto construirá backend/frontend y levantará PostgreSQL (desde imagen local cargada)..."
-                            docker compose up -d --build
+                            docker compose up -d --remove-orphans
 
                             # ----------------------------------------
-                            # 4. VERIFICACIÓN
+                            # 4. LIMPIEZA REMOTA
                             # ----------------------------------------
                             echo "=========================================="
-                            echo "[VM2] ESTADO DE SERVICIOS"
+                            echo "[VM2] LIMPIEZA DE ARCHIVOS TEMPORALES Y HUÉRFANAS"
+                            echo "=========================================="
+                            rm -f ${POSTGRES_TAR_GZ} ${BACKEND_TAR_GZ} ${FRONTEND_TAR_GZ}
+                            docker image prune -f
+
+                            # ----------------------------------------
+                            # 5. VERIFICACIÓN
+                            # ----------------------------------------
+                            echo "=========================================="
+                            echo "[VM2] ESTADO DE CONTENEDORES"
                             echo "=========================================="
                             docker compose ps
 
@@ -188,22 +204,6 @@ EOF
                 }
             }
         }
-
-        // ETAPA 5: LIMPIEZA EN VM1
-        stage('Cleanup on VM1') {
-            steps {
-                script {
-                    echo "=========================================="
-                    echo "ETAPA 5: LIMPIEZA"
-                    echo "=========================================="
-                    echo "[INFO] Eliminando archivo tar temporal en VM1..."
-                }
-                sh """
-                    rm -f ${POSTGRES_TAR}
-                    echo "[OK] Limpieza completada."
-                """
-            }
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -212,10 +212,10 @@ EOF
     post {
         success {
             echo "=========================================="
-            echo "✅ PIPELINE EXITOSO - TaskFlow Desplegado (OFFLINE)"
+            echo "✅ PIPELINE EXITOSO - TASKFLOW DESPLEGADO"
             echo "=========================================="
-            echo "[INFO] Imagen PostgreSQL transferida desde VM1 y cargada en VM2"
-            echo "[INFO] Stack levantado: db (Postgres) + backend + frontend"
+            echo "[INFO] Stack levantado en VM2 sin acceso a internet"
+            echo "[INFO] Directorio remoto: ${REMOTE_DIR}"
             echo "[INFO] Frontend: http://${VM2_IP}:3000"
             echo "[INFO] Backend API: http://${VM2_IP}:8080/api"
             echo "[INFO] Health Check: http://${VM2_IP}:8080/api/health"
@@ -226,8 +226,8 @@ EOF
             echo "=========================================="
             echo "❌ PIPELINE FALLIDO"
             echo "=========================================="
-            echo "[ERROR] El despliegue ha fallado."
-            echo "[ERROR] Verifica: conexión SSH, espacio en disco, permisos Docker, y que VM2 NO requiera pull a internet."
+            echo "[ERROR] El despliegue automatizado de TaskFlow ha fallado."
+            echo "[ERROR] Revisar logs: conexión SSH, espacio en disco, permisos Docker o errores de build."
             echo "=========================================="
         }
 

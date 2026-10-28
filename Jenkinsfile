@@ -38,8 +38,8 @@ pipeline {
                     echo '--- Creando directorio remoto en VM 2 ---'
                     ssh -o StrictHostKeyChecking=no ${env.VM2_USER}@${env.VM2_HOST} "mkdir -p /home/${env.VM2_USER}/taskflow-deploy"
 
-                    echo '--- Transfiriendo imágenes y docker-compose.yaml ---'
-                    scp -o StrictHostKeyChecking=no backend-image.tar.gz frontend-image.tar.gz docker-compose.yaml ${env.VM2_USER}@${env.VM2_HOST}:/home/${env.VM2_USER}/taskflow-deploy/
+                    echo '--- Transfiriendo imágenes y docker-compose.yml ---'
+                    scp -o StrictHostKeyChecking=no backend-image.tar.gz frontend-image.tar.gz docker-compose.yml ${env.VM2_USER}@${env.VM2_HOST}:/home/${env.VM2_USER}/taskflow-deploy/
 
                     echo '--- Limpiando archivos temporales en VM 1 ---'
                     rm backend-image.tar.gz frontend-image.tar.gz

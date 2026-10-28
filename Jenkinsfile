@@ -145,15 +145,28 @@ pipeline {
                             fi
 
                             # ----------------------------------------
-                            # 1. LIMPIAR CONTENEDORES ANTERIORES
+                            # 1. LIMPIAR CONTENEDORES Y REDES ANTERIORES
                             # ----------------------------------------
                             echo "=========================================="
                             echo "[VM2] LIMPIANDO CONTENEDORES ANTERIORES"
                             echo "=========================================="
                             docker compose down --remove-orphans || true
 
+                            # Eliminar por si quedan contenedores con nombres del proyecto
+                            docker rm -f taskflow-backend taskflow-frontend taskflow-db 2>/dev/null || true
+
                             # ----------------------------------------
-                            # 2. CARGAR IMÁGENES DESDE .TAR.GZ
+                            # 2. ELIMINAR IMÁGENES ANTIGUAS DE TASKFLOW
+                            # ----------------------------------------
+                            echo "=========================================="
+                            echo "[VM2] ELIMINANDO IMÁGENES ANTIGUAS DE TASKFLOW"
+                            echo "=========================================="
+                            # Eliminar solo las imágenes de nuestra app para forzar uso de las nuevas
+                            docker rmi -f ${BACKEND_IMAGE}:latest ${FRONTEND_IMAGE}:latest 2>/dev/null || true
+                            echo "[VM2] Imágenes antiguas de backend/frontend eliminadas (si existían)."
+
+                            # ----------------------------------------
+                            # 3. CARGAR IMÁGENES DESDE .TAR.GZ
                             # ----------------------------------------
                             echo "=========================================="
                             echo "[VM2] CARGANDO IMÁGENES DESDE ARCHIVOS .TAR.GZ"
@@ -171,7 +184,7 @@ pipeline {
                             echo "[VM2] ${FRONTEND_IMAGE} cargado correctamente."
 
                             # ----------------------------------------
-                            # 3. LEVANTAR STACK CON DOCKER COMPOSE
+                            # 4. LEVANTAR STACK CON DOCKER COMPOSE
                             # ----------------------------------------
                             echo "=========================================="
                             echo "[VM2] LEVANTANDO STACK CON DOCKER COMPOSE"
@@ -179,7 +192,7 @@ pipeline {
                             docker compose up -d --remove-orphans
 
                             # ----------------------------------------
-                            # 4. LIMPIEZA REMOTA
+                            # 5. LIMPIEZA REMOTA FINAL
                             # ----------------------------------------
                             echo "=========================================="
                             echo "[VM2] LIMPIEZA DE ARCHIVOS TEMPORALES Y HUÉRFANAS"
@@ -188,7 +201,7 @@ pipeline {
                             docker image prune -f
 
                             # ----------------------------------------
-                            # 5. VERIFICACIÓN
+                            # 6. VERIFICACIÓN
                             # ----------------------------------------
                             echo "=========================================="
                             echo "[VM2] ESTADO DE CONTENEDORES"

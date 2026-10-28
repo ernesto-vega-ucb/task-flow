@@ -7,9 +7,9 @@ pipeline {
     // -------------------------------------------------------------------------
     environment {
         // IP y acceso a VM2
-        VM2_IP          = '192.168.100.XX'  // Cambiar por la IP real de VM2
-        VM2_USER        = 'usuario'          // Cambiar por el usuario SSH de VM2
-        REMOTE_DIR      = '/home/usuario/taskflow'
+        VM2_IP          = '192.168.100.20'  // Cambiar por la IP real de VM2
+        VM2_USER        = 'administrator'          // Cambiar por el usuario SSH de VM2
+        REMOTE_DIR      = '/home/administrator/taskflow'
 
         // Credencial SSH configurada en Jenkins
         SSH_CRED_ID     = 'vm2-ssh-key'

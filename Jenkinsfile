@@ -27,7 +27,7 @@ pipeline {
                     sh "docker build -t ${env.BACKEND_IMAGE} ./backend"
 
                     echo '--- Construyendo imagen del Frontend ---'
-                    sh "docker build -t ${env.FRONTEND_IMAGE} ./frontend"
+                    sh "docker build --build-arg VITE_API_BASE_URL=http://${env.VM2_HOST}:8080/api -t ${env.FRONTEND_IMAGE} ./frontend"
                 }
             }
         }

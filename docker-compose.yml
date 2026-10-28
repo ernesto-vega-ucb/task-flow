@@ -32,9 +32,7 @@ services:
 
   # ---------- Backend (Spring Boot) ----------
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: taskflow-backend:latest
     container_name: taskflow-backend
     depends_on:
       db:
@@ -52,12 +50,7 @@ services:
 
   # ---------- Frontend (React + Nginx) ----------
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        # URL que el NAVEGADOR usará para llamar a la API (host = tu máquina)
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080/api}
+    image: taskflow-frontend:latest
     container_name: taskflow-frontend
     depends_on:
       - backend

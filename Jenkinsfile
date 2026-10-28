@@ -69,8 +69,8 @@ pipeline {
                     echo "[VM1] Construyendo imagen Docker del backend: ${BACKEND_IMAGE}"
                     docker build -t ${BACKEND_IMAGE} ./backend
 
-                    echo "[VM1] Construyendo imagen Docker del frontend: ${FRONTEND_IMAGE}"
-                    docker build -t ${FRONTEND_IMAGE} ./frontend
+                    echo "[VM1] Construyendo imagen Docker del frontend: ${FRONTEND_IMAGE} con VITE_API_BASE_URL apuntando a VM2"
+                    docker build --build-arg VITE_API_BASE_URL=http://${VM2_IP}:8080/api -t ${FRONTEND_IMAGE} ./frontend
 
                     echo "[VM1] Verificando imágenes generadas/obtenidas:"
                     docker images | grep -E 'postgres|taskflow-backend|taskflow-frontend'

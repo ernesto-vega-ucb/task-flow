@@ -44,7 +44,7 @@ pipeline {
                     ssh -o StrictHostKeyChecking=no ${env.VM2_USER}@${env.VM2_HOST} "mkdir -p /home/${env.VM2_USER}/taskflow-deploy"
 
                     echo '--- Transfiriendo archivos a la VM 2 ---'
-                    scp -o StrictHostKeyChecking=no backend-image.tar.gz frontend-image.tar.gz db-image.tar.gz docker-compose.yaml ${env.VM2_USER}@${env.VM2_HOST}:/home/${env.VM2_USER}/taskflow-deploy/
+                    scp -o StrictHostKeyChecking=no backend-image.tar.gz frontend-image.tar.gz db-image.tar.gz docker-compose.yml ${env.VM2_USER}@${env.VM2_HOST}:/home/${env.VM2_USER}/taskflow-deploy/
 
                     echo '--- Limpiando archivos temporales en VM 1 ---'
                     rm backend-image.tar.gz frontend-image.tar.gz db-image.tar.gz

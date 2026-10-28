@@ -1,8 +1,6 @@
 # ============================================================
-# Docker Compose provisional de TaskFlow (monorepo)
+# Docker Compose de TaskFlow (monorepo)
 # ------------------------------------------------------------
-# Futuro: se sustituirá por Kubernetes dentro de un pipeline
-# CI/CD; por ahora levanta el stack completo en local.
 #
 # Uso:
 #   docker compose up --build -d

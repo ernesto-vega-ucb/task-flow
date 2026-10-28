@@ -7,7 +7,7 @@ pipeline {
 
         BACKEND_IMAGE = 'taskflow-backend:latest'
         FRONTEND_IMAGE = 'taskflow-frontend:latest'
-        DB_IMAGE = 'postgres:15-alpine'
+        DB_IMAGE = 'postgres:16-alpine'
     }
 
     stages {

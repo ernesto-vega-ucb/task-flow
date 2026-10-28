@@ -27,24 +27,19 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
-                // API REST stateless: no usamos cookies/sesión para auth
                 .csrf(AbstractHttpConfigurer::disable)
-                // Habilita CORS usando el bean CorsConfigurationSource
                 .cors(Customizer.withDefaults())
-                // Sin gestión de sesión
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                // Reglas de autorización
                 .authorizeHttpRequests(auth -> auth
-                        // Permitir preflight CORS
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        // Permitir acceso libre a endpoints públicos
                         .requestMatchers("/api/health", "/api/health/**").permitAll()
                         .requestMatchers("/api/tasks", "/api/tasks/**").permitAll()
-                        // Cualquier otro endpoint bajo /api también permitido para desarrollo
                         .requestMatchers("/api/**").permitAll()
-                        // Resto de rutas (por si existen) también permitidas en desarrollo
                         .anyRequest().permitAll()
-                );
+                )
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .formLogin(AbstractHttpConfigurer::disable)
+                .logout(AbstractHttpConfigurer::disable);
 
         // Futuro: añadir .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
         return http.build();

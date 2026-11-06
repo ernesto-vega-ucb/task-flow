@@ -11,6 +11,10 @@ COPY . .
 ARG VITE_API_BASE_URL=http://localhost:8080/api
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 
+# Declarar el argumento que viene desde Jenkins (--build-arg)
+ARG VITE_APP_VERSION
+ENV VITE_APP_VERSION=$VITE_APP_VERSION
+
 RUN npm run build
 
 # ---- Etapa 2: Servir estáticos con Nginx ----

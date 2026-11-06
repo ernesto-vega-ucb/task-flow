@@ -8,7 +8,9 @@ import type { Task, TaskCreateRequest, TaskStatus, TaskUpdateRequest } from '../
  * (Authorization: Bearer <token>) leyéndolo de localStorage o de un contexto.
  */
 export const apiClient: AxiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080/api',
+  // Por defecto usa ruta relativa para que Nginx (gateway) haga el proxy a /api -> backend.
+  // Solo se necesita VITE_API_BASE_URL para desarrollo local sin proxy.
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? '/api',
   headers: {
     'Content-Type': 'application/json',
   },

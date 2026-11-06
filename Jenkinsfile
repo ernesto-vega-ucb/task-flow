@@ -61,26 +61,36 @@ pipeline {
             }
         }
 
-        // ETAPA 2: CODE QUALITY / LINTER
+        // ETAPA 2: CODE QUALITY / LINTER (herramientas gestionadas por Jenkins)
         stage('Code Quality') {
             parallel {
-                stage('Backend - Maven Checkstyle/Test') {
+                stage('Backend - Lint & Test (Maven)') {
+                    tools {
+                        maven 'Maven-3.9'
+                        jdk 'JDK-21'
+                    }
                     steps {
                         script {
                             echo "=========================================="
                             echo "ETAPA 2a: QUALITY GATES - BACKEND"
                             echo "=========================================="
                         }
-                        // Análisis estático con Checkstyle y pruebas unitarias
+                        // Análisis estático y pruebas del backend
                         sh """
-                            echo "[VM1] Ejecutando verificación estática y tests en backend..."
+                            echo "[VM1] Verificando versiones de herramientas..."
+                            java -version
+                            mvn -version
+                            echo "[VM1] Ejecutando validación y tests en backend..."
                             cd backend
-                            mvn -B checkstyle:check test || true
+                            mvn -B clean test checkstyle:check || true
                             echo "[VM1] Quality gate backend finalizado (revisar resultados arriba)."
                         """
                     }
                 }
-                stage('Frontend - Lint (tsc --noEmit)') {
+                stage('Frontend - Lint (Node.js)') {
+                    tools {
+                        nodejs 'NodeJS-20'
+                    }
                     steps {
                         script {
                             echo "=========================================="
@@ -88,9 +98,12 @@ pipeline {
                             echo "=========================================="
                         }
                         sh """
+                            echo "[VM1] Verificando versiones de herramientas..."
+                            node -v
+                            npm -v
                             echo "[VM1] Ejecutando lint/análisis de código en frontend..."
                             cd frontend
-                            if [ -f package-lock.json ]; then npm ci; else npm install; fi
+                            npm ci
                             npm run lint || true
                             echo "[VM1] Quality gate frontend finalizado (revisar resultados arriba)."
                         """

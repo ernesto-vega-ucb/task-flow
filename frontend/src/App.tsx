@@ -29,11 +29,13 @@ export default function App() {
     }
   };
 
+  const appVersion = import.meta.env.VITE_APP_VERSION || 'v1.0.local';
+
   return (
     <div className="app">
       <header className="app__header">
-        <h1 className="app__title">TaskFlow</h1>
-        <p className="app__subtitle">Gestión de tareas simple y rápida</p>
+        <h1 className="app__title">TaskFlow <span style={{ fontSize: '0.6em', opacity: 0.8, fontWeight: 'normal' }}>({import.meta.env.VITE_APP_VERSION || 'v1.0.local'})</span></h1>
+        <p className="app__subtitle">Universidad Católica Boliviana - Modulo Continuous Integration and Continuous Deployment</p>
       </header>
 
       <main className="app__main">

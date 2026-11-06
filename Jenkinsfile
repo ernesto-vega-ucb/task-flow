@@ -131,7 +131,7 @@ pipeline {
 
                     echo "[VM1] Construyendo imagen Docker del frontend: ${FRONTEND_IMAGE}"
                     # Con Nginx como gateway no necesitamos pasar IP del backend al build
-                    docker build --build-arg VITE_API_BASE_URL=/api -t ${FRONTEND_IMAGE} -t ${FRONTEND_IMAGE_BASE}:latest ./frontend
+                    docker build --build-arg VITE_API_BASE_URL=/api --build-arg VITE_APP_VERSION="v1.0.${BUILD_NUMBER}" -t ${FRONTEND_IMAGE} -t ${FRONTEND_IMAGE_BASE}:latest ./frontend
 
                     echo "[VM1] Verificando imágenes generadas/obtenidas:"
                     docker images | grep -E 'postgres|${BACKEND_IMAGE_BASE}|${FRONTEND_IMAGE_BASE}'

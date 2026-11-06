@@ -6,9 +6,7 @@ pipeline {
     // VM1 = Jenkins (con acceso a internet) | VM2 = Servidor destino (SIN acceso a internet)
     // -------------------------------------------------------------------------
     environment {
-        // Conexión SSH hacia VM2
-        VM2_IP          = '192.168.100.XX'        // Cambiar por la IP real de VM2
-        VM2_USER        = 'administrator'         // Cambiar por el usuario SSH de VM2
+        //  Directorio remoto en VM2
         REMOTE_DIR      = '/home/administrator/taskflow-deploy'
 
         // Credencial SSH configurada en Jenkins
@@ -192,7 +190,7 @@ pipeline {
                         ls -lh ${POSTGRES_TAR_GZ} ${BACKEND_TAR_GZ} ${FRONTEND_TAR_GZ}
 
                         echo "[VM1] Creando directorio remoto en VM2: ${REMOTE_DIR}"
-                        ssh -o StrictHostKeyChecking=no ${VM2_USER}@${VM2_IP} "mkdir -p ${REMOTE_DIR}"
+                        ssh -o StrictHostKeyChecking=no ${params.VM2_USER}@${params.VM2_IP} "mkdir -p ${REMOTE_DIR}"
 
                         echo "[VM1] Transferiendo imágenes comprimidas y docker-compose.yml a VM2..."
                         scp -o StrictHostKeyChecking=no \\
@@ -200,7 +198,7 @@ pipeline {
                             ${BACKEND_TAR_GZ} \\
                             ${FRONTEND_TAR_GZ} \\
                             ${COMPOSE_FILE} \\
-                            ${VM2_USER}@${VM2_IP}:${REMOTE_DIR}/
+                            ${params.VM2_USER}@${params.VM2_IP}:${REMOTE_DIR}/
 
                         echo "[VM1] Limpiando archivos temporales locales..."
                         rm -f ${POSTGRES_TAR_GZ} ${BACKEND_TAR_GZ} ${FRONTEND_TAR_GZ}
@@ -218,11 +216,11 @@ pipeline {
                     echo "=========================================="
                     echo "ETAPA 6: CLEAN & DEPLOY EN VM2"
                     echo "=========================================="
-                    echo "[INFO] Ejecutando despliegue offline en ${VM2_USER}@${VM2_IP} con tag ${env.IMAGE_TAG}"
+                    echo "[INFO] Ejecutando despliegue offline en ${params.VM2_USER}@${params.VM2_IP} con tag ${env.IMAGE_TAG}"
                 }
                 sshagent(credentials: ["${SSH_CRED_ID}"]) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no ${VM2_USER}@${VM2_IP} << 'EOF'
+                        ssh -o StrictHostKeyChecking=no ${params.VM2_USER}@${params.VM2_IP} << 'EOF'
                             set -e
                             echo "=========================================="
                             echo "[VM2] INICIANDO DESPLIEGUE AUTOMATIZADO"
@@ -318,8 +316,8 @@ EOF
             echo "=========================================="
             echo "[INFO] Tag de imágenes: ${env.IMAGE_TAG ?: 'N/A'}"
             echo "[INFO] Stack levantado en VM2 sin acceso a internet"
-            echo "[INFO] API Gateway (Frontend/Nginx): http://${VM2_IP}/"
-            echo "[INFO] API via Gateway: http://${VM2_IP}/api/health"
+            echo "[INFO] API Gateway (Frontend/Nginx): http://${params.VM2_IP}/"
+            echo "[INFO] API via Gateway: http://${params.VM2_IP}/api/health"
             echo "[INFO] Directorio remoto: ${REMOTE_DIR}"
             echo "=========================================="
         }

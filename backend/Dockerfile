@@ -14,8 +14,12 @@ COPY src ./src
 RUN mvn -B clean package -Dspring.profiles.active=test
 
 # ---- Etapa 2: Imagen de runtime ligera (JRE) ----
+# JRE Alpine con base actualizada para reducir vulnerabilidades
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
+
+# Actualizar paquetes Alpine en runtime para parches de seguridad
+RUN apk update && apk upgrade --no-cache && rm -rf /var/cache/apk/*
 
 # Usuario no root por seguridad
 RUN addgroup -S taskflow && adduser -S taskflow -G taskflow

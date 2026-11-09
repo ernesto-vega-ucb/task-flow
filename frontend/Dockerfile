@@ -22,7 +22,8 @@ RUN npm run lint
 RUN npm run build
 
 # ---- Etapa 2: Servir estáticos con Nginx (gateway) ----
-FROM nginx:1.27-alpine
+# Usar tag estable con Alpine actualizado para reducir vulnerabilidades
+FROM nginx:stable-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html

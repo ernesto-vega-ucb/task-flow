@@ -1,23 +1,27 @@
-# ---- Etapa 1: Build de la app React ----
+# ---- Etapa 1: Build de la app React (con quality gates) ----
 FROM node:20-alpine AS build
 WORKDIR /app
 
+# Copiar dependencias primero para cache
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
 
+# Copiar el código fuente
 COPY . .
 
-# Argumento de build para inyectar la URL de la API en tiempo de imagen
-ARG VITE_API_BASE_URL=http://localhost:8080/api
+# Argumentos de build (inyectados por Jenkins / docker build)
+ARG VITE_API_BASE_URL=/api
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+ARG VITE_APP_VERSION=v1.0.local
+ENV VITE_APP_VERSION=${VITE_APP_VERSION}
 
-# Declarar el argumento que viene desde Jenkins (--build-arg)
-ARG VITE_APP_VERSION
-ENV VITE_APP_VERSION=$VITE_APP_VERSION
+# Quality gate: linter/validación TypeScript (si falla, aborta el build)
+RUN npm run lint
 
+# Build de producción
 RUN npm run build
 
-# ---- Etapa 2: Servir estáticos con Nginx ----
+# ---- Etapa 2: Servir estáticos con Nginx (gateway) ----
 FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf

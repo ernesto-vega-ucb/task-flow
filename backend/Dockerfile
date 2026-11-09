@@ -1,4 +1,4 @@
-# ---- Etapa 1: Build con Maven ----
+# ---- Etapa 1: Build + Tests con Maven (quality gate) ----
 FROM maven:3.9.9-eclipse-temurin-21 AS build
 WORKDIR /app
 
@@ -6,16 +6,19 @@ WORKDIR /app
 COPY pom.xml .
 RUN mvn -B dependency:go-offline
 
-# Copiar el código fuente y empaquetar el jar (sin tests para la imagen)
+# Copiar el código fuente
 COPY src ./src
-RUN mvn -B clean package -DskipTests
 
-# ---- Etapa 2: Imagen de runtime con JRE ----
-FROM eclipse-temurin:21-jre
+# Ejecuta tests automáticamente usando perfil 'test' (H2 en memoria).
+# Si los tests fallan, el RUN aborta el build de la imagen.
+RUN mvn -B clean package -Dspring.profiles.active=test
+
+# ---- Etapa 2: Imagen de runtime ligera (JRE) ----
+FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
 # Usuario no root por seguridad
-RUN addgroup --system taskflow && adduser --system --ingroup taskflow taskflow
+RUN addgroup -S taskflow && adduser -S taskflow -G taskflow
 USER taskflow
 
 COPY --from=build /app/target/*.jar app.jar

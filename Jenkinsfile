@@ -25,7 +25,10 @@ pipeline {
 
         // Escaneo de seguridad (Trivy)
         TRIVY_SEVERITY  = 'HIGH,CRITICAL'
-        TRIVY_EXIT_CODE = '0' // 0 = no falla el pipeline (solo reporta), usar '1' para bloquear
+        // '1' hace fallar el pipeline si encuentra vulnerabilidades o si el escaneo falla
+        TRIVY_EXIT_CODE = '1'
+        // Usar directorio con espacio (evita 'no space left on device' en /tmp)
+        TRIVY_CACHE_DIR = "${WORKSPACE}/.trivy-cache"
     }
 
     stages {
@@ -98,18 +101,44 @@ pipeline {
                     echo "=========================================="
                 }
                 sh """
+                    set -e
+
+                    # Preparar caché en workspace para evitar 'no space left on device' en /tmp
+                    mkdir -p "${TRIVY_CACHE_DIR}"
+                    export TRIVY_CACHE_DIR="${TRIVY_CACHE_DIR}"
+                    export TMPDIR="${WORKSPACE}/.tmp-trivy"
+                    mkdir -p "\$TMPDIR"
+
+                    # Liberar espacio antes del escaneo
+                    docker system prune -f || true
+
                     if ! command -v trivy >/dev/null 2>&1; then
                         echo "[VM1] Trivy no disponible. Intentando instalación..."
-                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin || true
+                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
                     fi
 
-                    if command -v trivy >/dev/null 2>&1; then
-                        trivy image --exit-code ${TRIVY_EXIT_CODE} --severity ${TRIVY_SEVERITY} --no-progress ${BACKEND_IMAGE} || true
-                        trivy image --exit-code ${TRIVY_EXIT_CODE} --severity ${TRIVY_SEVERITY} --no-progress ${FRONTEND_IMAGE} || true
-                        echo "[OK] Escaneo completado."
-                    else
-                        echo "[WARN] Trivy no disponible. Se omite."
+                    if ! command -v trivy >/dev/null 2>&1; then
+                        echo "[ERROR] Trivy no está instalado y no se pudo instalar. Abortando pipeline."
+                        exit 1
                     fi
+
+                    echo "[VM1] Escaneando ${BACKEND_IMAGE} (severidades: ${TRIVY_SEVERITY})"
+                    trivy image \\
+                        --cache-dir "\$TRIVY_CACHE_DIR" \\
+                        --exit-code ${TRIVY_EXIT_CODE} \\
+                        --severity ${TRIVY_SEVERITY} \\
+                        --no-progress \\
+                        ${BACKEND_IMAGE}
+
+                    echo "[VM1] Escaneando ${FRONTEND_IMAGE} (severidades: ${TRIVY_SEVERITY})"
+                    trivy image \\
+                        --cache-dir "\$TRIVY_CACHE_DIR" \\
+                        --exit-code ${TRIVY_EXIT_CODE} \\
+                        --severity ${TRIVY_SEVERITY} \\
+                        --no-progress \\
+                        ${FRONTEND_IMAGE}
+
+                    echo "[OK] Escaneo completado sin vulnerabilidades bloqueantes."
                 """
             }
         }

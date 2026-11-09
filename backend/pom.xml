@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.4.5</version>
+        <version>3.4.13</version>
         <relativePath/>
     </parent>
 
@@ -19,6 +19,9 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- Overrides explícitos para CVEs reportados por Trivy -->
+        <postgresql.version>42.7.8</postgresql.version>
+        <jackson-bom.version>2.18.4</jackson-bom.version>
     </properties>
 
     <dependencies>
@@ -43,7 +46,7 @@
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
-        <!-- Driver JDBC para PostgreSQL -->
+        <!-- Driver JDBC para PostgreSQL (versión parcheada vía property) -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

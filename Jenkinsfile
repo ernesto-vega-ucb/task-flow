@@ -214,36 +214,38 @@ pipeline {
         // existente re-etiquetada con la nueva APP_VERSION (docker tag).
         // =====================================================================
         stage('Build Images (condicional)') {
-            when {
-                expression { env.BACKEND_CHANGED == 'true' || env.FRONTEND_CHANGED == 'true' }
-            }
             steps {
                 script {
                     echo "=========================================="
                     echo "ETAPA 2: BUILD DE IMÁGENES (QUALITY GATES)"
                     echo "=========================================="
+                    if (env.BACKEND_CHANGED == 'true' || env.FRONTEND_CHANGED == 'true') {
+                        sh '''
+                            set -e
+                            docker image prune -f || true
+
+                            if [ "$BACKEND_CHANGED" = "true" ]; then
+                                echo "[VM1] Backend cambió: build Maven (tests H2 en Dockerfile) + imagen $BACKEND_IMAGE"
+                                docker build -t "$BACKEND_IMAGE" ./backend
+                            else
+                                echo "[VM1] Backend SIN cambios: build omitido. VM2 reutiliza su imagen (retag a $BACKEND_IMAGE)."
+                            fi
+
+                            if [ "$FRONTEND_CHANGED" = "true" ]; then
+                                echo "[VM1] Frontend cambió: build Vite (lint en Dockerfile) + imagen $FRONTEND_IMAGE"
+                                docker build \\
+                                    --build-arg VITE_API_BASE_URL=/api \\
+                                    --build-arg VITE_APP_VERSION="$APP_VERSION" \\
+                                    -t "$FRONTEND_IMAGE" ./frontend
+                            else
+                                echo "[VM1] Frontend SIN cambios: build omitido. VM2 reutiliza su imagen (retag a $FRONTEND_IMAGE)."
+                            fi
+                        '''
+                    } else {
+                        echo "[OMITIDA] ETAPA 2: sin cambios en 'backend/' ni en 'frontend/' en este commit."
+                        echo "[OMITIDA] No se ejecuta ningún 'docker build' y no se generan imágenes nuevas (APP_VERSION se mantiene)."
+                    }
                 }
-                sh '''
-                    set -e
-                    docker image prune -f || true
-
-                    if [ "$BACKEND_CHANGED" = "true" ]; then
-                        echo "[VM1] Backend cambió: build Maven (tests H2 en Dockerfile) + imagen $BACKEND_IMAGE"
-                        docker build -t "$BACKEND_IMAGE" ./backend
-                    else
-                        echo "[VM1] Backend SIN cambios: build omitido. VM2 reutiliza su imagen (retag a $BACKEND_IMAGE)."
-                    fi
-
-                    if [ "$FRONTEND_CHANGED" = "true" ]; then
-                        echo "[VM1] Frontend cambió: build Vite (lint en Dockerfile) + imagen $FRONTEND_IMAGE"
-                        docker build \\
-                            --build-arg VITE_API_BASE_URL=/api \\
-                            --build-arg VITE_APP_VERSION="$APP_VERSION" \\
-                            -t "$FRONTEND_IMAGE" ./frontend
-                    else
-                        echo "[VM1] Frontend SIN cambios: build omitido. VM2 reutiliza su imagen (retag a $FRONTEND_IMAGE)."
-                    fi
-                '''
             }
         }
 
@@ -251,45 +253,46 @@ pipeline {
         // ETAPA 3: ESCANEO DE SEGURIDAD (solo imágenes nuevas)
         // =====================================================================
         stage('Container Security Scan') {
-            when {
-                expression { env.BACKEND_CHANGED == 'true' || env.FRONTEND_CHANGED == 'true' }
-            }
             steps {
                 script {
                     echo "=========================================="
                     echo "ETAPA 3: ESCANEO DE SEGURIDAD (TRIVY)"
                     echo "=========================================="
+                    if (env.BACKEND_CHANGED == 'true' || env.FRONTEND_CHANGED == 'true') {
+                        sh '''
+                            set -e
+                            mkdir -p "$TRIVY_CACHE_DIR" "$WORKSPACE/.tmp-trivy"
+                            export TMPDIR="$WORKSPACE/.tmp-trivy"
+                            docker system prune -f || true
+
+                            if ! command -v trivy >/dev/null 2>&1; then
+                                echo "[VM1] Trivy no disponible. Instalando..."
+                                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+                            fi
+                            command -v trivy >/dev/null 2>&1 || { echo "[ERROR] Trivy no disponible"; exit 1; }
+
+                            if [ "$BACKEND_CHANGED" = "true" ]; then
+                                echo "[VM1] Escaneando $BACKEND_IMAGE (severidades: $TRIVY_SEVERITY)"
+                                trivy image --cache-dir "$TRIVY_CACHE_DIR" --exit-code "$TRIVY_EXIT_CODE" \\
+                                    --severity "$TRIVY_SEVERITY" --no-progress "$BACKEND_IMAGE"
+                            else
+                                echo "[VM1] Trivy backend omitido (sin cambios)."
+                            fi
+
+                            if [ "$FRONTEND_CHANGED" = "true" ]; then
+                                echo "[VM1] Escaneando $FRONTEND_IMAGE (severidades: $TRIVY_SEVERITY)"
+                                trivy image --cache-dir "$TRIVY_CACHE_DIR" --exit-code "$TRIVY_EXIT_CODE" \\
+                                    --severity "$TRIVY_SEVERITY" --no-progress "$FRONTEND_IMAGE"
+                            else
+                                echo "[VM1] Trivy frontend omitido (sin cambios)."
+                            fi
+
+                            echo "[OK] Escaneo completado sin vulnerabilidades bloqueantes."
+                        '''
+                    } else {
+                        echo "[OMITIDA] ETAPA 3: no hay imágenes nuevas que escanear (la Etapa 2 no generó builds)."
+                    }
                 }
-                sh '''
-                    set -e
-                    mkdir -p "$TRIVY_CACHE_DIR" "$WORKSPACE/.tmp-trivy"
-                    export TMPDIR="$WORKSPACE/.tmp-trivy"
-                    docker system prune -f || true
-
-                    if ! command -v trivy >/dev/null 2>&1; then
-                        echo "[VM1] Trivy no disponible. Instalando..."
-                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-                    fi
-                    command -v trivy >/dev/null 2>&1 || { echo "[ERROR] Trivy no disponible"; exit 1; }
-
-                    if [ "$BACKEND_CHANGED" = "true" ]; then
-                        echo "[VM1] Escaneando $BACKEND_IMAGE (severidades: $TRIVY_SEVERITY)"
-                        trivy image --cache-dir "$TRIVY_CACHE_DIR" --exit-code "$TRIVY_EXIT_CODE" \\
-                            --severity "$TRIVY_SEVERITY" --no-progress "$BACKEND_IMAGE"
-                    else
-                        echo "[VM1] Trivy backend omitido (sin cambios)."
-                    fi
-
-                    if [ "$FRONTEND_CHANGED" = "true" ]; then
-                        echo "[VM1] Escaneando $FRONTEND_IMAGE (severidades: $TRIVY_SEVERITY)"
-                        trivy image --cache-dir "$TRIVY_CACHE_DIR" --exit-code "$TRIVY_EXIT_CODE" \\
-                            --severity "$TRIVY_SEVERITY" --no-progress "$FRONTEND_IMAGE"
-                    else
-                        echo "[VM1] Trivy frontend omitido (sin cambios)."
-                    fi
-
-                    echo "[OK] Escaneo completado sin vulnerabilidades bloqueantes."
-                '''
             }
         }
 

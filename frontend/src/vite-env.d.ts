@@ -8,3 +8,9 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// Versión global de la plataforma inyectada en runtime por el contenedor
+// (public/version.js regenerado por docker-entrypoint.d en cada arranque).
+interface Window {
+  __APP_VERSION__?: string;
+}

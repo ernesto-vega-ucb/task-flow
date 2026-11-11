@@ -29,7 +29,10 @@ export default function App() {
     }
   };
 
-  const appVersion = import.meta.env.VITE_APP_VERSION || 'v1.0.local';
+  // Versión global de la plataforma: primero la inyectada en RUNTIME por el
+  // contenedor (/version.js, siempre refleja la versión desplegada), luego
+  // la horneada en build (VITE_APP_VERSION) como fallback.
+  const appVersion = window.__APP_VERSION__ || import.meta.env.VITE_APP_VERSION || 'v1.0.local';
 
   return (
     <div className="app">

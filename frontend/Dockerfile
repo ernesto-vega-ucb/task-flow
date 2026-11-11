@@ -31,6 +31,12 @@ RUN apk update && apk upgrade --no-cache libxslt
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
+# Versión global en RUNTIME: el entrypoint de nginx (docker-entrypoint.d)
+# genera /version.js en cada arranque con la APP_VERSION que docker-compose
+# inyecta al contenedor. La UI la lee (window.__APP_VERSION__) con fallback
+# al valor horneado en build (VITE_APP_VERSION).
+COPY docker-entrypoint.d/ /docker-entrypoint.d/
+
 EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]

@@ -76,6 +76,12 @@ services:
     image: taskflow-frontend:${APP_VERSION:-latest}
     depends_on:
       - backend
+    environment:
+      # Versión global de la plataforma: el entrypoint de nginx publica
+      # /version.js con este valor en cada arranque del contenedor, así la
+      # UI siempre muestra la versión desplegada (aunque el frontend no se
+      # haya recompilado y solo se haya re-etiquetado la imagen).
+      APP_VERSION: ${APP_VERSION:-v1.0.local}
     ports:
       - "${FRONTEND_PORT:-80}:80"
     restart: unless-stopped

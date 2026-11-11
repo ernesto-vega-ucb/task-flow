@@ -18,6 +18,13 @@
 #     contenedores (taskflow-previous-*) sin colisionar con los del activo.
 #   - El volumen 'taskflow-db-data' tiene nombre fijo para que ambos
 #     proyectos compartan los datos de PostgreSQL.
+#
+# VERSIONADO GLOBAL: existe una ÚNICA versión de la plataforma (APP_VERSION
+# en .env, ej. v1.1.0). Backend y frontend comparten esa misma versión:
+#   taskflow-backend:${APP_VERSION}  y  taskflow-frontend:${APP_VERSION}
+# El pipeline de Jenkins incrementa APP_VERSION (parche) solo si cambia
+# 'backend/' o 'frontend/'; el componente que NO cambió reutiliza su imagen
+# existente en VM2 (re-etiquetada con la nueva versión global).
 # ============================================================
 
 name: taskflow
@@ -47,7 +54,9 @@ services:
 
   # ---------- Backend (Spring Boot) ----------
   backend:
-    image: ${BACKEND_IMAGE:-taskflow-backend:latest}
+    # Versión global de la plataforma (APP_VERSION en .env, ej. v1.1.0).
+    # El componente que no cambió se re-etiqueta en VM2 con la nueva versión.
+    image: taskflow-backend:${APP_VERSION:-latest}
     depends_on:
       db:
         condition: service_healthy
@@ -63,7 +72,8 @@ services:
 
   # ---------- Frontend + API Gateway (React + Nginx) ----------
   frontend:
-    image: ${FRONTEND_IMAGE:-taskflow-frontend:latest}
+    # Misma versión global que el backend (APP_VERSION en .env).
+    image: taskflow-frontend:${APP_VERSION:-latest}
     depends_on:
       - backend
     ports:

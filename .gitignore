@@ -16,3 +16,6 @@ frontend/dist/
 .env
 .env.local
 *.log
+
+# Estado del pipeline de Jenkins (versionado global APP_VERSION)
+.taskflow-*

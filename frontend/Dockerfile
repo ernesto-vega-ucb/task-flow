@@ -25,6 +25,9 @@ RUN npm run build
 # Usar tag estable con Alpine actualizado para reducir vulnerabilidades
 FROM nginx:stable-alpine
 
+# Parche de seguridad DevSecOps: Actualizar libxslt para mitigar CVE-2026-87636 y CVE-2026-9947
+RUN apk update && apk upgrade --no-cache libxslt
+
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 

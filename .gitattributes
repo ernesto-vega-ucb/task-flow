@@ -1,0 +1,6 @@
+# TaskFlow — normalización de finales de línea
+# Los scripts de shell DEBEN usar LF: un shebang con CRLF rompe el arranque
+# de los contenedores Linux ("not found") y el entrypoint de nginx ignora
+# silenciosamente los .sh sin bit de ejecutable. Esto garantiza LF en
+# cualquier plataforma (Windows incluido) al hacer checkout/archive.
+*.sh text eol=lf

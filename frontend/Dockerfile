@@ -35,7 +35,21 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # genera /version.js en cada arranque con la APP_VERSION que docker-compose
 # inyecta al contenedor. La UI la lee (window.__APP_VERSION__) con fallback
 # al valor horneado en build (VITE_APP_VERSION).
+# IMPORTANTE — dos trampas de scripts en imágenes Linux (ambas ocurrieron):
+#   1) El entrypoint de nginx IGNORA los *.sh sin bit de ejecutable
+#      ("Ignoring $f, not executable"): commiteado desde Windows el modo
+#      llega como 100644 y el mecanismo falla SILENCIOSAMENTE en producción
+#      (VM2 quedó sirviendo v1.0.local).
+#   2) Finales de línea CRLF rompen el shebang ("...not found"): con set -e
+#      del entrypoint, el contenedor MORIRÍA al arrancar.
+# El RUN siguiente corrige ambos DENTRO de la imagen (independiente del
+# checkout que hizo git): elimina \r, fuerza el bit de ejecutable y ASSERTA
+# con test -x: si algo falla, el BUILD falla aquí (no en producción).
 COPY docker-entrypoint.d/ /docker-entrypoint.d/
+RUN cd /docker-entrypoint.d && \
+    for f in *.sh; do tr -d '\r' < "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done && \
+    chmod +x *.sh && \
+    test -x /docker-entrypoint.d/30-app-version.sh
 
 EXPOSE 80
 

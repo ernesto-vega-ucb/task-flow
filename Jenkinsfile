@@ -586,9 +586,42 @@ else
 fi
 
 # ----------------------------------------------------------------
+# 7b) Verificación de la VERSIÓN GLOBAL en el gateway (frontend):
+#     /version.js debe servir la APP_VERSION desplegada. Si no
+#     coincide (imagen sin entrypoint de versión, contenedor sin
+#     recrear, etc.) el deploy se considera FALLIDO -> rollback.
+# ----------------------------------------------------------------
+VERSION_OK=false
+if [ "$HEALTH_OK" = "true" ]; then
+    echo "[VM2] Verificando versión global en el gateway (debe servir '$APP_VERSION')..."
+    VER_ATTEMPT=0
+    while [ "$VER_ATTEMPT" -lt 3 ]; do
+        FE_CID=$(docker ps --filter "label=com.docker.compose.project=taskflow" \\
+                      --filter "label=com.docker.compose.service=frontend" -q 2>/dev/null | head -n 1 || true)
+        if [ -n "$FE_CID" ]; then
+            SERVED=$(docker exec "$FE_CID" wget -qO- http://localhost/version.js 2>/dev/null || true)
+            if echo "$SERVED" | grep -q "'$APP_VERSION'"; then
+                VERSION_OK=true
+                break
+            fi
+        fi
+        sleep 2
+        VER_ATTEMPT=$((VER_ATTEMPT + 1))
+    done
+    if [ "$VERSION_OK" = "true" ]; then
+        echo "[VM2] La UI sirve la versión global correcta: $APP_VERSION"
+    else
+        echo "[ERROR] El gateway NO sirve la versión global '$APP_VERSION'. Respuesta obtenida:"
+        echo "${SERVED:- (sin respuesta del frontend)}"
+        echo "[ERROR] El contenedor frontend no ejecutó docker-entrypoint.d/30-app-version.sh"
+        echo "[ERROR] (imagen sin el entrypoint de versión, o contenedor no recreado)."
+    fi
+fi
+
+# ----------------------------------------------------------------
 # 8) ÉXITO -> eliminar respaldo | FALLO -> rollback + exit 1
 # ----------------------------------------------------------------
-if [ "$HEALTH_OK" = "true" ]; then
+if [ "$HEALTH_OK" = "true" ] && [ "$VERSION_OK" = "true" ]; then
     echo "[VM2] Despliegue exitoso. Eliminando contenedores de espera ':previous'..."
     if [ "$STANDBY_AVAILABLE" = "true" ]; then
         $STANDBY down --remove-orphans 2>/dev/null || true

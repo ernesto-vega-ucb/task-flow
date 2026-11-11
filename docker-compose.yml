@@ -3,19 +3,31 @@
 # ------------------------------------------------------------
 #
 # Uso:
-#   docker compose up --build -d
+#   docker compose up -d          # levantar (proyecto: taskflow)
 #   docker compose down           # parar
 #   docker compose down -v        # parar y borrar datos de la BD
 #
 # Arquitectura: Frontend/Nginx actúa como API Gateway en puerto 80
-# y hace proxy de /api/ al backend interno (sin CORS / sin exponer backend)
+# y hace proxy de /api/ al backend interno (sin CORS / sin exponer backend).
+#
+# Despliegue resiliente (Jenkins -> VM2):
+#   - Proyecto ACTIVO : 'taskflow'          (stack en producción)
+#   - Proyecto STANDBY: 'taskflow-previous' (respaldo ':previous' en espera,
+#     usado para rollback automático si el healthcheck del backend falla)
+#   - NO se usa container_name fijo: el standby debe poder crear sus propios
+#     contenedores (taskflow-previous-*) sin colisionar con los del activo.
+#   - El volumen 'taskflow-db-data' tiene nombre fijo para que ambos
+#     proyectos compartan los datos de PostgreSQL.
 # ============================================================
+
+name: taskflow
 
 services:
   # ---------- Base de datos PostgreSQL ----------
   db:
-    image: postgres:16-alpine
-    container_name: taskflow-db
+    # Imagen controlada por Jenkins: solo se recarga en VM2 si cambia su
+    # configuración (bloque db del compose) o su versión de imagen.
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     environment:
       POSTGRES_DB: ${DB_NAME:-taskflow}
       POSTGRES_USER: ${DB_USERNAME:-taskflow}
@@ -36,12 +48,11 @@ services:
   # ---------- Backend (Spring Boot) ----------
   backend:
     image: ${BACKEND_IMAGE:-taskflow-backend:latest}
-    container_name: taskflow-backend-container
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DB_HOST: db                # nombre del servicio dentro de la red compose
+      DB_HOST: db                # alias DNS del servicio dentro de la red compose
       DB_PORT: "5432"
       DB_NAME: ${DB_NAME:-taskflow}
       DB_USERNAME: ${DB_USERNAME:-taskflow}
@@ -53,7 +64,6 @@ services:
   # ---------- Frontend + API Gateway (React + Nginx) ----------
   frontend:
     image: ${FRONTEND_IMAGE:-taskflow-frontend:latest}
-    container_name: taskflow-frontend-container
     depends_on:
       - backend
     ports:

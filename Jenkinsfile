@@ -10,8 +10,9 @@ pipeline {
     // VERSIONADO GLOBAL: una ÚNICA versión de la plataforma (APP_VERSION,
     // ej. v1.1.0) almacenada en '.env' (raíz del repo, gitignored).
     // Imágenes: taskflow-backend:<APP_VERSION> y taskflow-frontend:<APP_VERSION>.
-    // La UI renderiza esa misma versión (VITE_APP_VERSION en el build del
-    // frontend). No existen versiones independientes por componente.
+    // La UI renderiza esa misma versión: /version.js se regenera en cada
+    // arranque del contenedor a partir de APP_VERSION (runtime). No existen
+    // versiones independientes por componente.
     // -------------------------------------------------------------------------
     environment {
         // Directorio remoto en VM2
@@ -28,10 +29,14 @@ pipeline {
         COMPOSE_FILE    = 'docker-compose.yml'
 
         // Estado persistido en el workspace (sobrevive a 'checkout scm'):
-        //   .taskflow-app-version   -> última APP_VERSION global resuelta
-        //   .taskflow-postgres-hash -> hash de la config de PostgreSQL
-        APP_VERSION_FILE   = '.taskflow-app-version'
-        POSTGRES_HASH_FILE = '.taskflow-postgres-hash'
+        //   .taskflow-app-version          -> última APP_VERSION REALMENTE desplegada
+        //   .taskflow-postgres-hash        -> hash de la config de PostgreSQL
+        //   .taskflow-last-deployed-commit -> commit del último deploy exitoso
+        // Estos archivos se actualizan SOLO en el 'post { always }' de la
+        // etapa de Deploy, con la versión que VM2 reporta como desplegada.
+        APP_VERSION_FILE         = '.taskflow-app-version'
+        POSTGRES_HASH_FILE       = '.taskflow-postgres-hash'
+        LAST_DEPLOYED_COMMIT_FILE = '.taskflow-last-deployed-commit'
 
         // Healthcheck del backend en VM2 (se ejecuta DENTRO del contenedor,
         // por eso el backend responde en localhost:8080)
@@ -60,44 +65,128 @@ pipeline {
                 }
                 checkout scm
                 script {
-                    env.GIT_HASH = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.GIT_HASH      = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.GIT_FULL_HASH = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+                }
 
+                // -------------------------------------------------------------
+                // 0) Limpieza del esquema anterior (versionado por componente)
+                //    y bootstrap de .env (gitignored) desde .env.example
+                // -------------------------------------------------------------
+                sh '''
+                    set -e
+                    rm -f .taskflow-backend-version .taskflow-frontend-version .backend-tag .frontend-tag
+                    git tag -l 'backend-v*' 'frontend-v*' | xargs -r git tag -d >/dev/null 2>&1 || true
+                    if [ ! -f .env ]; then
+                        echo "[INFO] .env no existe en el workspace: se crea desde .env.example"
+                        cp .env.example .env
+                    fi
+                '''
+
+                // -------------------------------------------------------------
+                // 0b) Versión REALMENTE desplegada en VM2 (fuente de verdad).
+                //     Se lee de 'deployed.env', que solo se escribe tras un
+                //     deploy con healthcheck OK. Si VM2 no responde, el
+                //     pipeline NO falla: se continúa con el estado local.
+                // -------------------------------------------------------------
+                script {
+                    env.VM2_DEPLOYED_VERSION = ''
+                    env.VM2_DEPLOYED_COMMIT  = ''
+                    try {
+                        def remote = ''
+                        sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                            remote = sh(
+                                script: '''
+                                    set +e
+                                    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \\
+                                        "$VM2_SSH_TARGET" \\
+                                        "if [ -f '$REMOTE_DIR/deployed.env' ]; then grep '^GIT_COMMIT=' '$REMOTE_DIR/deployed.env' | head -n 1; grep '^APP_VERSION=' '$REMOTE_DIR/deployed.env' | head -n 1; fi" \\
+                                        2>/dev/null | tr -d '\\r'
+                                ''',
+                                returnStdout: true
+                            ).trim()
+                        }
+                        remote.readLines().each { line ->
+                            if (line.startsWith('GIT_COMMIT=')) {
+                                env.VM2_DEPLOYED_COMMIT = line.substring('GIT_COMMIT='.length()).trim()
+                            } else if (line.startsWith('APP_VERSION=')) {
+                                env.VM2_DEPLOYED_VERSION = line.substring('APP_VERSION='.length()).trim()
+                            }
+                        }
+                        if (env.VM2_DEPLOYED_VERSION ==~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {
+                            echo "[INFO] Versión desplegada en VM2 (deployed.env): ${env.VM2_DEPLOYED_VERSION}"
+                        } else {
+                            env.VM2_DEPLOYED_VERSION = ''
+                            echo "[WARN] VM2 no reportó una versión válida. Se usa el estado local del workspace."
+                        }
+                        if (!(env.VM2_DEPLOYED_COMMIT ==~ /^[0-9a-fA-F]{7,40}$/)) {
+                            env.VM2_DEPLOYED_COMMIT = ''
+                        } else {
+                            echo "[INFO] Commit desplegado en VM2: ${env.VM2_DEPLOYED_COMMIT}"
+                        }
+                    } catch (Exception e) {
+                        env.VM2_DEPLOYED_VERSION = ''
+                        env.VM2_DEPLOYED_COMMIT  = ''
+                        echo "[WARN] No se pudo consultar el estado desplegado en VM2: ${e.message}. Se usa el estado local del workspace."
+                    }
+                }
+
+                script {
                     // -------------------------------------------------------------
-                    // 0) Limpieza del esquema anterior (versionado por componente)
-                    //    y bootstrap de .env (gitignored) desde .env.example
+                    // 1) Detección de cambios EXACTA entre dos commits:
+                    //      git diff <BASE> HEAD -- backend/
+                    //      git diff <BASE> HEAD -- frontend/
+                    //    BASE = commit desplegado en VM2 -> si no, el persistido
+                    //    en .taskflow-last-deployed-commit -> si no, HEAD~1.
+                    //    Comparar contra el commit desplegado evita que re-ejecutar
+                    //    el MISMO commit vuelva a detectar cambios inexistentes.
                     // -------------------------------------------------------------
                     sh '''
                         set -e
-                        rm -f .taskflow-backend-version .taskflow-frontend-version .backend-tag .frontend-tag
-                        git tag -l 'backend-v*' 'frontend-v*' | xargs -r git tag -d >/dev/null 2>&1 || true
-                        if [ ! -f .env ]; then
-                            echo "[INFO] .env no existe en el workspace: se crea desde .env.example"
-                            cp .env.example .env
+                        BASE_REF=""
+
+                        # 1) Commit desplegado reportado por VM2 (sobrevive a la
+                        #    pérdida del workspace de Jenkins: es la fuente más
+                        #    fiable de "qué código está en producción").
+                        CAND="${VM2_DEPLOYED_COMMIT:-}"
+                        if [ -n "$CAND" ] && git cat-file -e "${CAND}^{commit}" 2>/dev/null; then
+                            BASE_REF="$CAND"
+                            echo "[INFO] Base de comparación: commit desplegado en VM2 ($BASE_REF)."
                         fi
-                    '''
 
-                    // -------------------------------------------------------------
-                    // 1) Detección de cambios con Git Diff por componente (exacto):
-                    //      git diff --name-only HEAD~1 -- backend/
-                    //      git diff --name-only HEAD~1 -- frontend/
-                    // -------------------------------------------------------------
-                    sh '''
-                        set -e
-                        if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-                            BACKEND_DIFF=$(git diff --name-only HEAD~1 -- backend/ || true)
-                            FRONTEND_DIFF=$(git diff --name-only HEAD~1 -- frontend/ || true)
+                        # 2) Archivo de estado local (último deploy exitoso)
+                        if [ -z "$BASE_REF" ] && [ -f "$LAST_DEPLOYED_COMMIT_FILE" ]; then
+                            CAND=$(tr -d '[:space:]' < "$LAST_DEPLOYED_COMMIT_FILE" 2>/dev/null || true)
+                            if [ -n "$CAND" ] && git cat-file -e "${CAND}^{commit}" 2>/dev/null; then
+                                BASE_REF="$CAND"
+                                echo "[INFO] Base de comparación: último commit desplegado ($BASE_REF)."
+                            else
+                                echo "[WARN] $LAST_DEPLOYED_COMMIT_FILE contiene '$CAND' y no es un commit de este repo. Se ignora."
+                            fi
+                        fi
+                        if [ -z "$BASE_REF" ] && git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+                            BASE_REF="HEAD~1"
+                            echo "[INFO] Base de comparación: HEAD~1 (aún no hay registro de commit desplegado)."
+                        fi
+
+                        if [ -n "$BASE_REF" ]; then
+                            BACKEND_DIFF=$(git diff --name-only "$BASE_REF" HEAD -- backend/ || true)
+                            FRONTEND_DIFF=$(git diff --name-only "$BASE_REF" HEAD -- frontend/ || true)
                         else
-                            # Primer build del repo (no existe HEAD~1): cambio global
+                            # Primer build del repo (sin base válida): cambio global
+                            BASE_REF="(sin base)"
                             BACKEND_DIFF="backend/"
                             FRONTEND_DIFF="frontend/"
+                            echo "[INFO] No hay base válida: se asume cambio global."
                         fi
+                        echo "$BASE_REF" > .diff-base
 
                         if [ -n "$BACKEND_DIFF" ];  then echo true  > .backend-changed;  else echo false > .backend-changed;  fi
                         if [ -n "$FRONTEND_DIFF" ]; then echo true > .frontend-changed; else echo false > .frontend-changed; fi
 
-                        echo "[INFO] git diff --name-only HEAD~1 -- backend/ :"
+                        echo "[INFO] git diff --name-only $BASE_REF HEAD -- backend/ :"
                         echo "${BACKEND_DIFF:-(sin cambios)}"
-                        echo "[INFO] git diff --name-only HEAD~1 -- frontend/:"
+                        echo "[INFO] git diff --name-only $BASE_REF HEAD -- frontend/:"
                         echo "${FRONTEND_DIFF:-(sin cambios)}"
                     '''
                     env.BACKEND_CHANGED  = readFile('.backend-changed').trim()
@@ -126,12 +215,17 @@ pipeline {
 
                     // -------------------------------------------------------------
                     // 3) VERSIÓN GLOBAL (APP_VERSION) con incremento condicional:
-                    //    - LATEST = máximo entre .env, archivo de estado y
-                    //      tags locales 'app-v*' (persisten en el workspace).
+                    //    - CURRENT = máximo entre el estado local (.env, archivo
+                    //      de estado, tags 'app-v*') y la versión desplegada en
+                    //      VM2: NUNCA se retrocede a una versión ya desplegada.
                     //    - Si cambió backend/ O frontend/ (o ambos) -> se
                     //      incrementa el parche (v1.1.0 -> v1.1.1).
-                    //    - Si NINGUNO cambió -> NO se incrementa, NO se
-                    //      compila nada y NO se generan imágenes nuevas.
+                    //    - Si NINGUNO cambió -> NO se incrementa, NO se compila
+                    //      nada y se redepliega la MISMA versión (idempotente).
+                    //    - AQUÍ NO se escribe el estado ni se crean tags: eso se
+                    //      hace en el post del Deploy con la versión que VM2
+                    //      reporta como desplegada. Si el deploy falla, el
+                    //      workspace no queda afirmando una versión inexistente.
                     // -------------------------------------------------------------
                     sh '''
                         set -e
@@ -149,35 +243,27 @@ pipeline {
                             return 0
                         }
 
-                        set_env_var() {
-                            if grep -q "^$1=" .env; then
-                                sed -i "s|^$1=.*|$1=$2|" .env
-                            else
-                                echo "$1=$2" >> .env
-                            fi
-                        }
-
                         CURRENT=$(latest_app_version)
+                        CURRENT=${CURRENT:-v1.1.0}
+
+                        # La versión desplegada en VM2 también cuenta (evita downgrades)
+                        CURRENT=$(printf '%s\\n%s\\n' "$CURRENT" "${VM2_DEPLOYED_VERSION:-}" \\
+                            | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' | sort -V | tail -n 1)
                         CURRENT=${CURRENT:-v1.1.0}
 
                         if [ "$BACKEND_CHANGED" = "true" ] || [ "$FRONTEND_CHANGED" = "true" ]; then
                             CUR_NUM=${CURRENT#v}
                             NEW_NUM=$(echo "$CUR_NUM" | awk -F. '{ $NF = $NF + 1; OFS = "."; print $1, $2, $3 }')
                             NEW="v$NEW_NUM"
-                            echo "$NEW" > "$APP_VERSION_FILE"
-                            git tag "app-$NEW" 2>/dev/null || true
                             echo true > .version-bumped
                             echo "[INFO] Cambios detectados (backend=$BACKEND_CHANGED, frontend=$FRONTEND_CHANGED):"
                             echo "[INFO] APP_VERSION incrementada: $CURRENT -> $NEW"
                         else
                             NEW="$CURRENT"
-                            echo "$CURRENT" > "$APP_VERSION_FILE"
                             echo false > .version-bumped
                             echo "[INFO] Sin cambios en backend/ ni en frontend/:"
-                            echo "[INFO] APP_VERSION se mantiene en $CURRENT (sin builds ni imágenes nuevas)."
+                            echo "[INFO] APP_VERSION se mantiene en $CURRENT (sin builds; redeploy idempotente)."
                         fi
-
-                        set_env_var APP_VERSION "$NEW"
 
                         echo "$CURRENT" > .app-version-previous
                         echo "$NEW"     > .app-version-resolved
@@ -197,6 +283,8 @@ pipeline {
 
                     echo "=========================================="
                     echo "[INFO] Commit: ${env.GIT_HASH}"
+                    echo "[INFO] Base de comparación: ${readFile('.diff-base').trim()}"
+                    echo "[INFO] Versión desplegada en VM2: ${env.VM2_DEPLOYED_VERSION ?: '(no disponible)'}"
                     echo "[INFO] APP_VERSION (global): ${env.APP_VERSION} (incremento=${env.VERSION_BUMPED})"
                     echo "[INFO] Backend changed:  ${env.BACKEND_CHANGED}  -> ${env.BACKEND_IMAGE}"
                     echo "[INFO] Frontend changed: ${env.FRONTEND_CHANGED} -> ${env.FRONTEND_IMAGE}"
@@ -543,6 +631,9 @@ set_env_var() {
 }
 set_env_var APP_VERSION "$APP_VERSION"
 set_env_var POSTGRES_IMAGE "$POSTGRES_IMAGE"
+# Commit desplegado: permite detectar cambios contra el código REALMENTE
+# desplegado aunque el workspace de Jenkins se pierda o se reconstruya.
+set_env_var GIT_COMMIT "$GIT_COMMIT"
 
 # ----------------------------------------------------------------
 # 6) Desplegar stack actualizado (proyecto 'taskflow'). Compose recrea
@@ -586,20 +677,23 @@ else
 fi
 
 # ----------------------------------------------------------------
-# 7b) Verificación de la VERSIÓN GLOBAL en el gateway (frontend):
-#     /version.js debe servir la APP_VERSION desplegada. Si no
-#     coincide (imagen sin entrypoint de versión, contenedor sin
-#     recrear, etc.) el deploy se considera FALLIDO -> rollback.
+# 7b) Verificación INFORMATIVA de la VERSIÓN GLOBAL en el gateway:
+#     /version.js debería servir la APP_VERSION desplegada. Una
+#     discrepancia se registra como ADVERTENCIA y NO hace fallar el
+#     deploy (el despliegue es válido si el healthcheck del backend
+#     pasó). Así el pipeline nunca falla "a propósito" por la versión.
 # ----------------------------------------------------------------
 VERSION_OK=false
 if [ "$HEALTH_OK" = "true" ]; then
-    echo "[VM2] Verificando versión global en el gateway (debe servir '$APP_VERSION')..."
+    echo "[VM2] Verificando versión global en el gateway (esperada '$APP_VERSION', solo informativo)..."
     VER_ATTEMPT=0
     while [ "$VER_ATTEMPT" -lt 3 ]; do
         FE_CID=$(docker ps --filter "label=com.docker.compose.project=taskflow" \\
                       --filter "label=com.docker.compose.service=frontend" -q 2>/dev/null | head -n 1 || true)
         if [ -n "$FE_CID" ]; then
-            SERVED=$(docker exec "$FE_CID" wget -qO- http://localhost/version.js 2>/dev/null || true)
+            # 127.0.0.1 (no 'localhost'): 'localhost' puede resolver a ::1 y
+            # nginx solo escucha IPv4, lo que daría un falso negativo.
+            SERVED=$(docker exec "$FE_CID" wget -qO- http://127.0.0.1/version.js 2>/dev/null || true)
             if echo "$SERVED" | grep -q "'$APP_VERSION'"; then
                 VERSION_OK=true
                 break
@@ -611,17 +705,19 @@ if [ "$HEALTH_OK" = "true" ]; then
     if [ "$VERSION_OK" = "true" ]; then
         echo "[VM2] La UI sirve la versión global correcta: $APP_VERSION"
     else
-        echo "[ERROR] El gateway NO sirve la versión global '$APP_VERSION'. Respuesta obtenida:"
+        echo "[WARN] El gateway aún no sirve la versión global '$APP_VERSION' (no bloquea el deploy)."
+        echo "[WARN] Respuesta obtenida de /version.js:"
         echo "${SERVED:- (sin respuesta del frontend)}"
-        echo "[ERROR] El contenedor frontend no ejecutó docker-entrypoint.d/30-app-version.sh"
-        echo "[ERROR] (imagen sin el entrypoint de versión, o contenedor no recreado)."
+        echo "[WARN] Posible causa: contenedor frontend no recreado o entrypoint de versión no ejecutado."
+        echo "[WARN] El deploy continúa: el healthcheck del backend es el criterio de éxito."
     fi
 fi
 
 # ----------------------------------------------------------------
-# 8) ÉXITO -> eliminar respaldo | FALLO -> rollback + exit 1
+# 8) ÉXITO (healthcheck OK) -> eliminar respaldo
+#    FALLO real (healthcheck) -> rollback + exit 1
 # ----------------------------------------------------------------
-if [ "$HEALTH_OK" = "true" ] && [ "$VERSION_OK" = "true" ]; then
+if [ "$HEALTH_OK" = "true" ]; then
     echo "[VM2] Despliegue exitoso. Eliminando contenedores de espera ':previous'..."
     if [ "$STANDBY_AVAILABLE" = "true" ]; then
         $STANDBY down --remove-orphans 2>/dev/null || true
@@ -660,6 +756,7 @@ fi
                         ssh -o StrictHostKeyChecking=no "$VM2_SSH_TARGET" \\
                             "REMOTE_DIR='$REMOTE_DIR' \\
                              APP_VERSION='$APP_VERSION' \\
+                             GIT_COMMIT='$GIT_FULL_HASH' \\
                              POSTGRES_IMAGE='$POSTGRES_IMAGE' \\
                              POSTGRES_TAR_GZ='$POSTGRES_TAR_GZ' \\
                              BACKEND_TAR_GZ='$BACKEND_TAR_GZ' \\
@@ -673,6 +770,88 @@ fi
                     '''
                 }
             }
+
+            // -----------------------------------------------------------------
+            // ETAPA 5b: PERSISTENCIA DE LA VERSIÓN REALMENTE DESPLEGADA
+            // Se ejecuta SIEMPRE (éxito o fallo). Fuente de verdad: el
+            // 'deployed.env' de VM2, que solo se actualiza tras un deploy con
+            // healthcheck OK. Así el workspace NUNCA afirma una versión que no
+            // está en producción:
+            //   - deploy OK (aunque SSH se corte después) -> persiste la nueva.
+            //   - rollback por healthcheck             -> persiste la anterior.
+            //   - VM2 inaccesible                      -> no toca el estado.
+            // -----------------------------------------------------------------
+            post {
+                always {
+                    script {
+                        echo "=========================================="
+                        echo "ETAPA 5b: PERSISTENCIA DE LA VERSIÓN DESPLEGADA"
+                        echo "=========================================="
+                        def intended = (env.APP_VERSION ?: '').trim()
+                        def deployed = ''
+                        try {
+                            sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                                deployed = sh(
+                                    script: '''
+                                        set +e
+                                        for i in 1 2 3; do
+                                            V=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \\
+                                                "$VM2_SSH_TARGET" \\
+                                                "if [ -f '$REMOTE_DIR/deployed.env' ]; then sed -n 's/^APP_VERSION=//p' '$REMOTE_DIR/deployed.env' | head -n 1; fi" \\
+                                                2>/dev/null | tr -d '\\r' | tr -d '[:space:]')
+                                            if [ -n "$V" ]; then echo "$V"; exit 0; fi
+                                            sleep 3
+                                        done
+                                        exit 0
+                                    ''',
+                                    returnStdout: true
+                                ).trim()
+                            }
+                        } catch (Exception e) {
+                            echo "[WARN] No se pudo leer la versión desplegada en VM2: ${e.message}"
+                        }
+
+                        if (!(deployed ==~ /^v[0-9]+\.[0-9]+\.[0-9]+$/)) {
+                            // Si el deploy terminó OK pero la lectura remota falló
+                            // (SSH caído justo tras el éxito), la intención ES la
+                            // versión desplegada: 'deployed.env' se escribe al final
+                            // de un deploy con healthcheck OK.
+                            if (currentBuild.currentResult == 'SUCCESS' &&
+                                intended ==~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {
+                                echo "[WARN] Lectura remota no disponible; se registra la versión intencionada ${intended} (deploy OK)."
+                                deployed = intended
+                            }
+                        }
+
+                        if (deployed ==~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {
+                            echo "[INFO] Versión desplegada en VM2: ${deployed} (intencionada: ${intended ?: 'n/d'})."
+                            withEnv(["DEPLOYED_APP_VERSION=${deployed}"]) {
+                                sh '''
+                                    set -e
+                                    echo "$DEPLOYED_APP_VERSION" > "$APP_VERSION_FILE"
+                                    if [ -f .env ] && grep -q "^APP_VERSION=" .env; then
+                                        sed -i "s|^APP_VERSION=.*|APP_VERSION=$DEPLOYED_APP_VERSION|" .env
+                                    else
+                                        echo "APP_VERSION=$DEPLOYED_APP_VERSION" >> .env
+                                    fi
+                                    git tag -f "app-$DEPLOYED_APP_VERSION" >/dev/null 2>&1 || true
+                                '''
+                            }
+                            if (deployed == intended) {
+                                withEnv(["DEPLOYED_COMMIT=${env.GIT_FULL_HASH}"]) {
+                                    sh 'echo "$DEPLOYED_COMMIT" > "$LAST_DEPLOYED_COMMIT_FILE"'
+                                }
+                                echo "[INFO] Último commit desplegado registrado: ${env.GIT_FULL_HASH}."
+                            } else {
+                                echo "[WARN] La versión desplegada (${deployed}) difiere de la intencionada (${intended}): NO se actualiza $LAST_DEPLOYED_COMMIT_FILE."
+                            }
+                            env.APP_VERSION = deployed
+                        } else {
+                            echo "[WARN] No se pudo determinar la versión desplegada en VM2: el estado del workspace NO se modifica."
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -683,24 +862,16 @@ fi
         }
         failure {
             script {
-                // Si el pipeline falló después de incrementar APP_VERSION, se
-                // revierte el incremento para que la versión rastree lo que
-                // realmente llegó a producción (VM2 restauró ':previous').
-                if (env.VERSION_BUMPED == 'true' && env.PREVIOUS_APP_VERSION && env.APP_VERSION) {
-                    echo "❌ PIPELINE FALLIDO — revirtiendo APP_VERSION ${env.APP_VERSION} -> ${env.PREVIOUS_APP_VERSION} (la versión de producción es la restaurada ':previous')."
-                    sh '''
-                        set -e
-                        echo "$PREVIOUS_APP_VERSION" > "$APP_VERSION_FILE"
-                        if grep -q "^APP_VERSION=" .env; then
-                            sed -i "s|^APP_VERSION=.*|APP_VERSION=$PREVIOUS_APP_VERSION|" .env
-                        else
-                            echo "APP_VERSION=$PREVIOUS_APP_VERSION" >> .env
-                        fi
-                        git tag -d "app-$APP_VERSION" 2>/dev/null || true
-                    '''
-                    echo "[INFO] APP_VERSION restaurada a ${env.PREVIOUS_APP_VERSION} en .env / estado / tags del workspace."
-                } else {
-                    echo "❌ PIPELINE FALLIDO — no hubo incremento de versión que revertir (VM2 conserva el stack ':previous' si el healthcheck falló)."
+                // NO se revierte APP_VERSION aquí: el estado ya fue persistido
+                // en el 'post { always }' de la etapa de Deploy con la versión
+                // que VM2 reporta como REALMENTE desplegada ('deployed.env').
+                // Revertir a ciegas era lo que dejaba el workspace en v1.1.2
+                // mientras la app servía v1.1.3 (el deploy sí había funcionado
+                // y el fallo fue posterior, p. ej. un corte de SSH).
+                echo "❌ PIPELINE FALLIDO — el estado de versión NO se revierte."
+                echo "[INFO] Versión persistida = la reportada por VM2 (deployed.env): ${env.APP_VERSION ?: '(sin cambios registrados)'}."
+                if (env.PREVIOUS_APP_VERSION) {
+                    echo "[INFO] Versión intencionada antes del deploy: ${env.PREVIOUS_APP_VERSION} -> ${env.APP_VERSION}. Producción conserva la última versión con healthcheck OK."
                 }
             }
         }

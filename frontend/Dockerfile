@@ -6,6 +6,11 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 
+# Quality gate de seguridad: 'npm ci' solo INFORMA las vulnerabilidades;
+# este paso hace FALLAR el build si hay advisories HIGH o CRITICAL en las
+# dependencias instaladas (no se permite construir una imagen vulnerable).
+RUN npm audit --audit-level=high
+
 # Copiar el código fuente
 COPY . .
 

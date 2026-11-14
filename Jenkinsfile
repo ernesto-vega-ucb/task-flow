@@ -514,13 +514,73 @@ set_env_var() {
     set_env_var_file .env "$1" "$2"
 }
 
+# Ejecuta un comando con límite de tiempo y SIN heredar stdin.
+# Imprescindible en VM2 (offline): un 'docker compose' que intente hacer
+# PULL de una imagen ausente, o un daemon bloqueado, NO debe congelar el
+# pipeline indefinidamente. Además '</dev/null' evita que el comando
+# consuma el script que llega por 'ssh ... bash -s'.
+run_bounded() {
+    # $1 = segundos, $2 = descripción, resto = comando
+    local secs="$1" desc="$2" rc=0
+    shift 2
+    echo "[VM2] -> $desc (límite ${secs}s)..."
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@" </dev/null || rc=$?
+    else
+        "$@" </dev/null || rc=$?
+    fi
+    if [ "$rc" -eq 124 ]; then
+        echo "[WARN] '$desc' excedió ${secs}s y fue ABORTADO (daemon bloqueado o intento de descarga sin red)."
+    fi
+    return "$rc"
+}
+
+# Elimina los contenedores de un proyecto compose directamente y de forma
+# acotada (sin orquestación de redes/volúmenes que puede quedarse esperando).
+# Pensado para el respaldo, que está DETENIDO/CREADO: es rápido y seguro.
+rm_project_containers() {
+    # $1 = proyecto compose
+    local proj="$1" ids
+    ids=$(docker ps -aq --filter "label=com.docker.compose.project=$proj" 2>/dev/null || true)
+    [ -n "$ids" ] || return 0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 docker rm -f $ids </dev/null >/dev/null 2>&1 || true
+    else
+        docker rm -f $ids </dev/null >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+# Si falta el TAG de una imagen que SÍ está en ejecución (p. ej. la limpieza
+# de imágenes borró el tag), la re-etiqueta a partir del ID del contenedor.
+# Así el respaldo se puede crear SIN descargar nada (VM2 offline) y NO se
+# pierde la capacidad de rollback por un tag ausente.
+retag_running_image() {
+    # $1 = servicio compose (backend|frontend|db), $2 = tag destino
+    local svc="$1" tag="$2" proj cid img
+    docker image inspect "$tag" >/dev/null 2>&1 && return 0
+    for proj in taskflow taskflow-previous; do
+        cid=$(docker ps --filter "label=com.docker.compose.project=$proj" \\
+                     --filter "label=com.docker.compose.service=$svc" -q 2>/dev/null | head -n 1 || true)
+        if [ -n "$cid" ]; then
+            img=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)
+            if [ -n "$img" ]; then
+                echo "[VM2] Tag '$tag' ausente: re-etiquetando la imagen en ejecución de '$svc'."
+                docker tag "$img" "$tag" || true
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 # Versión que sirve el frontend de un proyecto compose (taskflow|taskflow-previous)
 get_served_version() {
     local proj="$1" cid served
     cid=$(docker ps --filter "label=com.docker.compose.project=$proj" \\
                  --filter "label=com.docker.compose.service=frontend" -q 2>/dev/null | head -n 1 || true)
     [ -n "$cid" ] || return 1
-    served=$(docker exec "$cid" wget -qO- http://127.0.0.1/version.js 2>/dev/null || true)
+    served=$(docker exec "$cid" wget -q -T 3 -O - http://127.0.0.1/version.js 2>/dev/null || true)
     echo "$served" | sed -n "s/.*__APP_VERSION__ = '\\([^']*\\)'.*/\\1/p" | head -n 1
 }
 
@@ -643,7 +703,8 @@ retag_if_needed frontend "$FRONTEND_CHANGED"
 LEGACY_RUNNING=$(docker ps --filter "label=com.docker.compose.project=taskflow-deploy" -q 2>/dev/null || true)
 if [ -n "$LEGACY_RUNNING" ]; then
     echo "[VM2] Stack legacy detectado (proyecto 'taskflow-deploy'): deteniéndolo para migrar..."
-    docker compose -f "$COMPOSE_FILE" -p taskflow-deploy down --remove-orphans 2>/dev/null || true
+    run_bounded 90 "detener stack legacy 'taskflow-deploy'" \\
+        docker compose -f "$COMPOSE_FILE" -p taskflow-deploy down --remove-orphans || true
 fi
 docker rm -f taskflow-db taskflow-backend-container taskflow-frontend-container 2>/dev/null || true
 
@@ -691,8 +752,38 @@ if [ -n "$STANDBY_RUNNING" ]; then
     STANDBY_AVAILABLE=true
 elif [ -f "$STANDBY_ENV" ]; then
     echo "[VM2] Preservando '$PREV_VERSION' como respaldo 'taskflow-previous' (en espera)..."
-    $STANDBY down --remove-orphans >/dev/null 2>&1 || true
-    if $STANDBY --env-file "$STANDBY_ENV" create; then
+
+    # Limpieza ACOTADA del respaldo anterior: se eliminan sus contenedores
+    # directamente (rápido) en lugar de un 'compose down' que puede quedarse
+    # bloqueado esperando al daemon. NUNCA toca el volumen compartido.
+    rm_project_containers taskflow-previous
+    docker network rm taskflow-previous_default >/dev/null 2>&1 || true
+
+    # Si los tags de la versión en producción ya no existen (p. ej. la
+    # limpieza de imágenes los borró), se recrean desde los contenedores en
+    # ejecución: evita un PULL sin red y conserva el rollback.
+    if [ -n "$CURRENT_RUNNING_VERSION" ]; then
+        retag_running_image backend "taskflow-backend:$PREV_VERSION" || true
+        retag_running_image frontend "taskflow-frontend:$PREV_VERSION" || true
+    fi
+    retag_running_image db "${POSTGRES_IMAGE:-postgres:16-alpine}" || true
+
+    # PREFLIGHT (VM2 SIN internet): si falta una imagen, 'compose create'
+    # intentaría hacer PULL y se quedaría colgado (DNS/TCP sin salida) hasta
+    # agotar timeouts. Se valida ANTES de invocar a Compose.
+    STANDBY_IMAGES_OK=true
+    for ref in "taskflow-backend:$PREV_VERSION" "taskflow-frontend:$PREV_VERSION" "${POSTGRES_IMAGE:-postgres:16-alpine}"; do
+        if ! docker image inspect "$ref" >/dev/null 2>&1; then
+            echo "[WARN] Imagen ausente en VM2: '$ref'."
+            STANDBY_IMAGES_OK=false
+        fi
+    done
+
+    if [ "$STANDBY_IMAGES_OK" != "true" ]; then
+        echo "[WARN] Respaldo ':previous' OMITIDO (imágenes no disponibles localmente)."
+        echo "[WARN] Se despliega SIN rollback automático."
+    elif run_bounded 120 "crear respaldo ':previous' ($PREV_VERSION)" \\
+            $STANDBY --env-file "$STANDBY_ENV" create; then
         STANDBY_AVAILABLE=true
         echo "[VM2] Respaldo ':previous' creado (detenido, en espera): $PREV_VERSION"
     else
@@ -718,12 +809,14 @@ set_env_var GIT_COMMIT "$GIT_COMMIT"
 # ----------------------------------------------------------------
 if [ "$STANDBY_AVAILABLE" = "true" ] && [ -n "$STANDBY_RUNNING" ]; then
     echo "[VM2] Deteniendo el respaldo ':previous' en ejecución (libera puertos para el nuevo stack)..."
-    $STANDBY stop
+    run_bounded 60 "detener respaldo ':previous'" $STANDBY stop \\
+        || echo "[WARN] No se pudo detener el respaldo; el 'up' podría fallar por puerto ocupado."
 fi
 
 UP_OK=false
 echo "[VM2] Desplegando stack actualizado: versión global $APP_VERSION..."
-if $ACTIVE up -d --remove-orphans; then
+if run_bounded 300 "desplegar stack 'taskflow' ($APP_VERSION)" \\
+        $ACTIVE up -d --remove-orphans; then
     UP_OK=true
 else
     echo "[ERROR] 'docker compose up -d' FALLÓ al desplegar el stack nuevo."
@@ -816,7 +909,8 @@ fi
 if [ "$HEALTH_OK" = "true" ]; then
     echo "[VM2] Despliegue exitoso. Eliminando contenedores de espera ':previous'..."
     if [ "$STANDBY_AVAILABLE" = "true" ]; then
-        $STANDBY down --remove-orphans 2>/dev/null || true
+        run_bounded 90 "eliminar respaldo ':previous'" $STANDBY down --remove-orphans \\
+            || true
     fi
 
     # Registrar la versión desplegada (fuente del próximo respaldo)
@@ -838,16 +932,17 @@ else
 
     # Detener/eliminar el stack nuevo. Si 'down' falla, forzar la eliminación
     # de sus contenedores para liberar puertos y red (NUNCA se toca el volumen).
-    if ! $ACTIVE down --remove-orphans; then
+    if ! run_bounded 90 "detener stack nuevo 'taskflow'" $ACTIVE down --remove-orphans; then
         echo "[WARN] 'docker compose down' del stack nuevo falló; forzando eliminación de contenedores..."
-        docker ps -aq --filter "label=com.docker.compose.project=taskflow" | xargs -r docker rm -f || true
+        rm_project_containers taskflow
         docker network rm taskflow_default >/dev/null 2>&1 || true
     fi
 
     ROLLBACK_OK=false
     if [ "$STANDBY_AVAILABLE" = "true" ]; then
         echo "[VM2] Levantando respaldo ':previous' desde $STANDBY_ENV..."
-        if $STANDBY --env-file "$STANDBY_ENV" up -d --force-recreate --remove-orphans; then
+        if run_bounded 300 "levantar respaldo ':previous' ($PREV_VERSION)" \\
+                $STANDBY --env-file "$STANDBY_ENV" up -d --force-recreate --remove-orphans; then
             ROLLBACK_OK=true
         else
             echo "[ERROR] No se pudo levantar el respaldo ':previous'."

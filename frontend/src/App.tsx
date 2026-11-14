@@ -38,7 +38,7 @@ export default function App() {
     <div className="app">
       <header className="app__header">
         <h1 className="app__title">
-          Proyecto TaskFlow <span style={{ fontSize: '0.6em', opacity: 0.8, fontWeight: 'normal' }}>| {appVersion}</span>
+          Proyecto TaskFlow <span style={{ fontSize: '0.6em', opacity: 0.8, fontWeight: 'normal' }}>| Version de la app {appVersion}</span>
         </h1>
         <p className="app__subtitle">Universidad Católica Boliviana - Modulo Continuous Integration and Continuous Deployment</p>
       </header>

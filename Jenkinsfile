@@ -38,10 +38,12 @@ pipeline {
         POSTGRES_HASH_FILE       = '.taskflow-postgres-hash'
         LAST_DEPLOYED_COMMIT_FILE = '.taskflow-last-deployed-commit'
 
-        // Healthcheck del backend en VM2 (se ejecuta DENTRO del contenedor,
-        // por eso el backend responde en localhost:8080)
-        BACKEND_HEALTH_URL  = 'http://localhost:8080/api/health'
-        HEALTH_TIMEOUT_SECS = '30'
+        // Healthcheck del backend en VM2. Se ejecuta DENTRO del contenedor
+        // contra 127.0.0.1: usar 'localhost' puede resolver a ::1 primero y
+        // dar un FALSO NEGATIVO (busybox wget no reintenta IPv4).
+        // 60s da margen al arranque de Spring Boot (DB incluida).
+        BACKEND_HEALTH_URL  = 'http://127.0.0.1:8080/api/health'
+        HEALTH_TIMEOUT_SECS = '60'
 
         // Escaneo de seguridad (Trivy)
         TRIVY_SEVERITY  = 'HIGH,CRITICAL'
@@ -464,10 +466,11 @@ pipeline {
         //  - Antes de reemplazar el stack, preserva la versión actual como
         //    contenedores en espera (proyecto 'taskflow-previous' = ':previous').
         //  - Despliega el stack actualizado (proyecto 'taskflow').
-        //  - Healthcheck del backend durante 30s (localhost:8080/api/health).
+        //  - Healthcheck del backend hasta 60s (127.0.0.1:8080/api/health,
+        //    con probes IPv4/IPv6/curl y respaldo vía DNS interno 'backend').
         //  - ÉXITO: elimina el respaldo ':previous'.
-        //  - FALLO: detiene el stack nuevo, restaura el respaldo ':previous'
-        //    y aborta el pipeline con FAILURE.
+        //  - FALLO: detiene el stack nuevo, restaura y VERIFICA el respaldo
+        //    ':previous' (versión servida) y aborta el pipeline con FAILURE.
         // =====================================================================
         stage('Deploy en VM2 (standby + rollback)') {
             steps {
@@ -494,6 +497,52 @@ ACTIVE="docker compose -f $COMPOSE_FILE -p taskflow"
 STANDBY="docker compose -f $COMPOSE_FILE -p taskflow-previous"
 HEALTH_INTERVAL=3
 
+# ----------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------
+set_env_var_file() {
+    # $1 = archivo env, $2 = clave, $3 = valor
+    local f="$1" k="$2" v="$3"
+    if grep -q "^${k}=" "$f"; then
+        sed -i "s|^${k}=.*|${k}=${v}|" "$f"
+    else
+        echo "${k}=${v}" >> "$f"
+    fi
+}
+
+set_env_var() {
+    set_env_var_file .env "$1" "$2"
+}
+
+# Versión que sirve el frontend de un proyecto compose (taskflow|taskflow-previous)
+get_served_version() {
+    local proj="$1" cid served
+    cid=$(docker ps --filter "label=com.docker.compose.project=$proj" \\
+                 --filter "label=com.docker.compose.service=frontend" -q 2>/dev/null | head -n 1 || true)
+    [ -n "$cid" ] || return 1
+    served=$(docker exec "$cid" wget -qO- http://127.0.0.1/version.js 2>/dev/null || true)
+    echo "$served" | sed -n "s/.*__APP_VERSION__ = '\\([^']*\\)'.*/\\1/p" | head -n 1
+}
+
+# Healthcheck ROBUSTO del backend: IPv4, IPv6 y curl DENTRO del contenedor,
+# y como último recurso desde el frontend (DNS interno 'backend').
+# Evita falsos negativos por 'localhost' -> ::1 o por falta de utilidades.
+backend_health_ok() {
+    # $1 = id del contenedor backend, $2 = proyecto compose (default taskflow)
+    local cid="$1" proj="${2:-taskflow}" fe
+    local url="${BACKEND_HEALTH_URL:-http://127.0.0.1:8080/api/health}"
+    docker exec "$cid" wget -q -T 3 -O /dev/null "$url" 2>/dev/null && return 0
+    docker exec "$cid" wget -q -T 3 -O /dev/null "http://127.0.0.1:8080/api/health" 2>/dev/null && return 0
+    docker exec "$cid" wget -q -T 3 -O /dev/null "http://[::1]:8080/api/health" 2>/dev/null && return 0
+    docker exec "$cid" sh -c 'command -v curl >/dev/null 2>&1 && curl -fsS -m 3 -o /dev/null http://127.0.0.1:8080/api/health' 2>/dev/null && return 0
+    fe=$(docker ps --filter "label=com.docker.compose.project=$proj" \\
+                  --filter "label=com.docker.compose.service=frontend" -q 2>/dev/null | head -n 1 || true)
+    if [ -n "$fe" ]; then
+        docker exec "$fe" wget -q -T 3 -O /dev/null "http://backend:8080/api/health" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 echo "================================================="
 echo " TaskFlow — Deploy en VM2"
 echo "================================================="
@@ -514,6 +563,9 @@ if [ ! -f deployed.env ] && [ -f .env ]; then
 fi
 # Limpiar variables legacy del esquema anterior (por componente)
 sed -i '/^BACKEND_IMAGE=/d; /^FRONTEND_IMAGE=/d' .env 2>/dev/null || true
+# Volumen de datos COMPARTIDO (declarado 'external' en el compose): debe
+# existir antes de cualquier 'docker compose up'. Idempotente; JAMÁS se borra.
+docker volume inspect taskflow-db-data >/dev/null 2>&1 || docker volume create taskflow-db-data
 
 # ----------------------------------------------------------------
 # 1) Cargar imágenes transferidas (solo las que llegaron)
@@ -596,9 +648,40 @@ fi
 docker rm -f taskflow-db taskflow-backend-container taskflow-frontend-container 2>/dev/null || true
 
 # ----------------------------------------------------------------
-# 4) Preservar la versión actual como respaldo ':previous'
-#    (contenedores CREADOS y DETENIDOS, en espera, desde deployed.env)
+# 4) Preservar la versión ACTUALMENTE EN EJECUCIÓN como respaldo.
+#    Fuente de verdad: la versión que sirve el frontend activo
+#    (/version.js). Si no se puede leer, se usa APP_VERSION de
+#    deployed.env. Si ambas difieren, se prioriza la que corre.
 # ----------------------------------------------------------------
+STANDBY_ENV=deployed.env
+PREV_VERSION=""
+CURRENT_RUNNING_VERSION=$(get_served_version taskflow || true)
+
+if [ -f deployed.env ]; then
+    PREV_VERSION=$(sed -n 's/^APP_VERSION=//p' deployed.env | head -n 1 || true)
+fi
+
+if [ -n "$CURRENT_RUNNING_VERSION" ] && [ "$CURRENT_RUNNING_VERSION" != "$PREV_VERSION" ]; then
+    echo "[WARN] deployed.env indica '$PREV_VERSION' pero producción sirve '$CURRENT_RUNNING_VERSION'."
+    echo "[WARN] Se usará la versión EN EJECUCIÓN como respaldo del rollback."
+    if [ -f deployed.env ]; then
+        cp deployed.env rollback.env
+    else
+        cp .env rollback.env
+    fi
+    set_env_var_file rollback.env APP_VERSION "$CURRENT_RUNNING_VERSION"
+    PREV_VERSION="$CURRENT_RUNNING_VERSION"
+    STANDBY_ENV=rollback.env
+fi
+PREV_VERSION=${PREV_VERSION:-$CURRENT_RUNNING_VERSION}
+
+if [ -n "$PREV_VERSION" ]; then
+    echo "[VM2] Versión en producción (respaldo para rollback): $PREV_VERSION"
+    echo "[VM2] Entorno del respaldo: $STANDBY_ENV"
+else
+    echo "[VM2] No se detectó una versión en producción (primer despliegue)."
+fi
+
 STANDBY_RUNNING=$(docker ps --filter "label=com.docker.compose.project=taskflow-previous" -q 2>/dev/null || true)
 
 STANDBY_AVAILABLE=false
@@ -606,12 +689,12 @@ if [ -n "$STANDBY_RUNNING" ]; then
     # Estado post-rollback: la versión anterior corre como 'taskflow-previous'.
     echo "[VM2] Stack ':previous' EN EJECUCIÓN (post-rollback): se conserva como respaldo."
     STANDBY_AVAILABLE=true
-elif [ -f deployed.env ]; then
-    echo "[VM2] Preservando versión actual como respaldo 'taskflow-previous' (en espera)..."
-    $STANDBY down --remove-orphans 2>/dev/null || true
-    if $STANDBY --env-file deployed.env create; then
+elif [ -f "$STANDBY_ENV" ]; then
+    echo "[VM2] Preservando '$PREV_VERSION' como respaldo 'taskflow-previous' (en espera)..."
+    $STANDBY down --remove-orphans >/dev/null 2>&1 || true
+    if $STANDBY --env-file "$STANDBY_ENV" create; then
         STANDBY_AVAILABLE=true
-        echo "[VM2] Respaldo ':previous' creado (detenido, en espera)."
+        echo "[VM2] Respaldo ':previous' creado (detenido, en espera): $PREV_VERSION"
     else
         echo "[WARN] No se pudo crear el respaldo ':previous': se despliega SIN rollback automático."
     fi
@@ -622,13 +705,6 @@ fi
 # ----------------------------------------------------------------
 # 5) Escribir .env del nuevo despliegue (versión global única)
 # ----------------------------------------------------------------
-set_env_var() {
-    if grep -q "^$1=" .env; then
-        sed -i "s|^$1=.*|$1=$2|" .env
-    else
-        echo "$1=$2" >> .env
-    fi
-}
 set_env_var APP_VERSION "$APP_VERSION"
 set_env_var POSTGRES_IMAGE "$POSTGRES_IMAGE"
 # Commit desplegado: permite detectar cambios contra el código REALMENTE
@@ -654,17 +730,23 @@ else
 fi
 
 # ----------------------------------------------------------------
-# 7) Healthcheck del backend: http://localhost:8080/api/health
-#    (se ejecuta DENTRO del contenedor backend), máx. 30 segundos.
+# 7) Healthcheck del backend (máx. HEALTH_TIMEOUT_SECS):
+#    - 'localhost' se evita: puede resolver a ::1 y busybox wget no
+#      reintenta IPv4 -> FALSO NEGATIVO con el backend sano.
+#    - Se prueban IPv4, IPv6, curl y, por último, el DNS interno
+#      desde el frontend ('http://backend:8080/api/health').
+#    - Si falla, se imprime el estado de los contenedores y el log
+#      del backend para diagnosticar la causa real.
 # ----------------------------------------------------------------
 HEALTH_OK=false
+CID=""
 if [ "$UP_OK" = "true" ]; then
     echo "[VM2] Healthcheck backend: $BACKEND_HEALTH_URL (hasta ${HEALTH_TIMEOUT_SECS}s)..."
     ELAPSED=0
     while [ "$ELAPSED" -lt "$HEALTH_TIMEOUT_SECS" ]; do
         CID=$(docker ps --filter "label=com.docker.compose.project=taskflow" \\
-                     --filter "label=com.docker.compose.service=backend" -q 2>/dev/null || true)
-        if [ -n "$CID" ] && docker exec "$CID" wget -q -T 3 -O /dev/null "$BACKEND_HEALTH_URL" 2>/dev/null; then
+                     --filter "label=com.docker.compose.service=backend" -q 2>/dev/null | head -n 1 || true)
+        if [ -n "$CID" ] && backend_health_ok "$CID"; then
             HEALTH_OK=true
             echo "[VM2] Healthcheck OK (HTTP 200) tras ${ELAPSED}s."
             break
@@ -672,6 +754,20 @@ if [ "$UP_OK" = "true" ]; then
         sleep "$HEALTH_INTERVAL"
         ELAPSED=$((ELAPSED + HEALTH_INTERVAL))
     done
+    if [ "$HEALTH_OK" != "true" ]; then
+        echo "[VM2] Diagnóstico: el backend no respondió HTTP 200."
+        echo "[VM2] Estado de contenedores del proyecto 'taskflow':"
+        docker ps -a --filter "label=com.docker.compose.project=taskflow" \\
+            --format "  - {{.Service}}: {{.Status}} {{.Ports}}" 2>/dev/null || true
+        if [ -n "$CID" ]; then
+            echo "[VM2] Últimas líneas de log del backend ($CID):"
+            docker logs --tail 40 "$CID" 2>&1 | sed 's/^/  | /' || true
+            echo "[VM2] Sockets en escucha dentro del backend (/proc/net/tcp*, hex):"
+            docker exec "$CID" sh -c 'grep -v local_address /proc/net/tcp6 /proc/net/tcp 2>/dev/null | head -n 20' 2>/dev/null | sed 's/^/  | /' || true
+        else
+            echo "[VM2] No hay contenedor backend en ejecución (¿falló al arrancar?)."
+        fi
+    fi
 else
     echo "[VM2] Se omite healthcheck: el stack nuevo no llegó a levantarse."
 fi
@@ -737,16 +833,67 @@ if [ "$HEALTH_OK" = "true" ]; then
     $ACTIVE ps
     echo "[OK] Despliegue completado: versión global $APP_VERSION"
 else
-    echo "[ERROR] Healthcheck backend FALLÓ tras ${HEALTH_TIMEOUT_SECS}s (contenedor no arranca o no responde HTTP 200)."
-    echo "[VM2] Deteniendo el stack nuevo y restaurando la versión anterior..."
-    $ACTIVE down --remove-orphans 2>/dev/null || true
+    echo "[ERROR] Healthcheck backend FALLÓ tras ${HEALTH_TIMEOUT_SECS}s (no responde HTTP 200)."
+    echo "[VM2] ROLLBACK: restaurando la versión anterior ($PREV_VERSION)..."
+
+    # Detener/eliminar el stack nuevo. Si 'down' falla, forzar la eliminación
+    # de sus contenedores para liberar puertos y red (NUNCA se toca el volumen).
+    if ! $ACTIVE down --remove-orphans; then
+        echo "[WARN] 'docker compose down' del stack nuevo falló; forzando eliminación de contenedores..."
+        docker ps -aq --filter "label=com.docker.compose.project=taskflow" | xargs -r docker rm -f || true
+        docker network rm taskflow_default >/dev/null 2>&1 || true
+    fi
+
+    ROLLBACK_OK=false
     if [ "$STANDBY_AVAILABLE" = "true" ]; then
-        echo "[VM2] Restaurando versión anterior desde el respaldo ':previous'..."
-        $STANDBY --env-file deployed.env up -d
-        echo "[ROLLBACK] Versión anterior restaurada y en ejecución:"
-        $STANDBY ps
+        echo "[VM2] Levantando respaldo ':previous' desde $STANDBY_ENV..."
+        if $STANDBY --env-file "$STANDBY_ENV" up -d --force-recreate --remove-orphans; then
+            ROLLBACK_OK=true
+        else
+            echo "[ERROR] No se pudo levantar el respaldo ':previous'."
+        fi
     else
-        echo "[ROLLBACK] No existía respaldo ':previous'; el stack nuevo quedó detenido."
+        echo "[ERROR] No existía respaldo ':previous'; el stack nuevo quedó detenido."
+    fi
+
+    if [ "$ROLLBACK_OK" = "true" ]; then
+        # Verificar que el respaldo realmente arrancó y qué versión sirve.
+        RB_ELAPSED=0
+        RB_BACKEND_OK=false
+        while [ "$RB_ELAPSED" -lt "$HEALTH_TIMEOUT_SECS" ]; do
+            RB_CID=$(docker ps --filter "label=com.docker.compose.project=taskflow-previous" \\
+                               --filter "label=com.docker.compose.service=backend" -q 2>/dev/null | head -n 1 || true)
+            if [ -n "$RB_CID" ] && backend_health_ok "$RB_CID" taskflow-previous; then
+                RB_BACKEND_OK=true
+                break
+            fi
+            sleep "$HEALTH_INTERVAL"
+            RB_ELAPSED=$((RB_ELAPSED + HEALTH_INTERVAL))
+        done
+
+        RB_VERSION=$(get_served_version taskflow-previous || true)
+        if [ "$RB_BACKEND_OK" = "true" ]; then
+            echo "[ROLLBACK] Backend del respaldo: OK."
+        else
+            echo "[WARN] Backend del respaldo aún sin respuesta; revisar 'docker compose -p taskflow-previous logs'."
+        fi
+        echo "[ROLLBACK] Versión servida por el respaldo: ${RB_VERSION:-'(no se pudo leer /version.js)'} (esperada: $PREV_VERSION)"
+        if [ -n "$RB_VERSION" ] && [ "$RB_VERSION" != "$PREV_VERSION" ]; then
+            echo "[WARN] La versión restaurada NO coincide con la esperada. Revisar el respaldo."
+        fi
+
+        # '.env' y 'deployed.env' vuelven a describir lo que está en producción
+        # (así el estado no queda afirmando la versión fallida).
+        if [ "$STANDBY_ENV" != "deployed.env" ]; then
+            cp "$STANDBY_ENV" deployed.env
+        fi
+        cp "$STANDBY_ENV" .env
+        echo "[ROLLBACK] Stack anterior restaurado y en ejecución:"
+        $STANDBY ps || true
+    else
+        echo "[ROLLBACK] FALLIDO: no se pudo restaurar la versión anterior. Se requiere intervención manual en VM2."
+        docker ps -a --filter "label=com.docker.compose.project=taskflow-previous" \\
+            --format "  - {{.Service}}: {{.Status}}" 2>/dev/null || true
     fi
     exit 1
 fi

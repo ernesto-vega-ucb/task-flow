@@ -87,5 +87,12 @@ services:
     restart: unless-stopped
 
 volumes:
+  # Volumen COMPARTIDO entre el stack activo ('taskflow') y el respaldo
+  # ('taskflow-previous'): debe ser el mismo para conservar los datos al
+  # hacer rollback. Se declara 'external' para que Compose NO intente
+  # crearlo/etiquetarlo por proyecto (evita el warning "already exists but
+  # was created for project ..."). El pipeline lo crea de forma idempotente
+  # antes de desplegar. En local: `docker volume create taskflow-db-data`.
   taskflow-db-data:
+    external: true
     name: taskflow-db-data
